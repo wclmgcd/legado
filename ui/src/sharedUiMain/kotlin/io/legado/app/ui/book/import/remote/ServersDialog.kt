@@ -86,6 +86,7 @@ import org.jetbrains.compose.resources.stringResource
  * - [onSelectDefault]: 切回默认 webdav (调用方设 `AppConfig.remoteServerId = DEFAULT_WEBDAV_ID`)
  * - [onConfirm]: 用户点确定 (参数为选中的 serverId; 调用方设 `AppConfig.remoteServerId` + 刷新 RemoteBook)
  * - [onDismiss]: 关闭对话框 (返回按钮 / 取消按钮 / 点击外部)
+ * - [onSyncQRead]: 点击轻阅读后端条目上的「同步」按钮 (调用方登录后端 + 全量同步)
  *
  * # 视觉对齐 (对照 app 端原版)
  *
@@ -101,6 +102,8 @@ import org.jetbrains.compose.resources.stringResource
  * @param onSelectDefault 切回默认 webdav 回调 (设置 remoteServerId = DEFAULT_WEBDAV_ID 并关闭对话框)
  * @param onConfirm 用户点确定回调, 参数为选中的 serverId (调用方设置并关闭对话框)
  * @param onDismiss 关闭对话框回调 (返回按钮 / 取消按钮 / 点击外部)
+ * @param onSyncQRead 轻阅读后端「同步」回调, 参数为待同步的 Server
+ *   (调用方调 `QReadSession.login` + `QReadSync.syncAll`; 默认空实现, 桌面/iOS 未接线时按钮点了无反应)
  */
 @Composable
 fun ServersDialog(
@@ -112,6 +115,7 @@ fun ServersDialog(
     onSelectDefault: () -> Unit,
     onConfirm: (Long) -> Unit,
     onDismiss: () -> Unit,
+    onSyncQRead: (Server) -> Unit = {},
 ) {
     val colors = AppTheme.colors
     // 当前选中的服务器 ID (内部状态, 初始值 = 调用方传入的 initialServerId)
@@ -152,6 +156,7 @@ fun ServersDialog(
                             onSelect = { selectServerId = item.id },
                             onEdit = { onEditServer(item.id) },
                             onDelete = { deletingServer = item },
+                            onSync = { onSyncQRead(item) },
                         )
                     }
                 }
@@ -199,6 +204,10 @@ fun ServersDialog(
  * 单条服务器列表项 (对照 app 端 ServersDialog.ServerItem)。
  *
  * 行高 48dp + 单选钮 + 名称 (weight) + 编辑 + 删除, 与 app 端原版完全一致。
+ *
+ * 轻阅读后端 ([Server.TYPE.QREAD]) 是例外: 它不提供 WebDav 文件树, 被选为
+ * 「远程服务」默认项只会让 [io.legado.app.model.remote.RemoteBook] 按 WebDav 去
+ * 访问而报错, 故不渲染单选钮 (不可选中), 改为渲染一个「同步」按钮。
  */
 @Composable
 private fun ServerItem(
@@ -207,6 +216,7 @@ private fun ServerItem(
     onSelect: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onSync: () -> Unit,
 ) {
     val colors = AppTheme.colors
     Row(
@@ -222,16 +232,21 @@ private fun ServerItem(
                 .clickable(onClick = onSelect),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AppRadioButton(
-                selected = selected,
-                onClick = onSelect,
-            )
+            if (item.type != Server.TYPE.QREAD) {
+                AppRadioButton(
+                    selected = selected,
+                    onClick = onSelect,
+                )
+            }
             Text(
                 text = item.name,
                 color = colors.primaryText,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+        if (item.type == Server.TYPE.QREAD) {
+            AppTextButton(text = "同步", onClick = onSync)
         }
         IconButton(onClick = onEdit) {
             Icon(

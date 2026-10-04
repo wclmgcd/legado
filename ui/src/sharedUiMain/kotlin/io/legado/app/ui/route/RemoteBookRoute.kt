@@ -20,6 +20,9 @@ import io.legado.app.help.config.LocalConfigKeys
 import io.legado.app.help.config.LocalConfigProviders
 import io.legado.app.help.config.LocalConfigShared
 import io.legado.app.help.config.PreferenceProviders
+import io.legado.app.help.qread.QReadSession
+import io.legado.app.help.qread.QReadSync
+import io.legado.app.help.toast.Toasters
 import io.legado.app.model.remote.RemoteBook
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.book.import.remote.RemoteBookScreen
@@ -39,6 +42,7 @@ import io.legado.app.ui.root.RouteEntry
 import io.legado.app.ui.root.ScreenModelStore
 import io.legado.app.ui.root.toRouteRef
 import io.legado.app.ui.widget.dialog.HelpDialog
+import kotlinx.coroutines.launch
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.no
 import legado.ui.generated.resources.ok
@@ -248,6 +252,27 @@ fun RemoteBookRoute(
                 showServersDialog = false
                 selected = emptySet()
                 shared.initData { shared.upPath() }
+            },
+            // 轻阅读后端 (autobcb/read): 登录 → 全量同步 (书源 / 分组 / 书架 / 搜索记录)。
+            // 全程 suspend, 故丢进 scope; 结果用 toast 反馈, 不阻塞对话框关闭。
+            // token 只存内存 (后端有 20 设备上限), 每次同步都重新登录, 见 QReadSession 注释。
+            onSyncQRead = { server ->
+                showServersDialog = false
+                scope.launch {
+                    val login = QReadSession.login(server)
+                    val msg = if (login.isSuccess) {
+                        val r = QReadSync.syncAll()
+                        if (r.isSuccess) {
+                            "轻阅读同步完成：书源 ${r.sourceCount}、书籍 ${r.bookCount}、" +
+                                "分组 ${r.groupCount}、搜索记录 ${r.searchCount}"
+                        } else {
+                            "轻阅读同步失败：${r.error}"
+                        }
+                    } else {
+                        "轻阅读登录失败：${login.exceptionOrNull()?.message ?: "未知错误"}"
+                    }
+                    Toasters.get().toast(msg)
+                }
             },
         )
     }

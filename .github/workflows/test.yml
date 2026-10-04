@@ -1,26 +1,18 @@
 name: Test Build
 
+# 【本 fork 已关闭自动触发】
+#
+# 上游的 push / pull_request / workflow_run(Build Web 完成) 三个入口全部移除,
+# 只保留手动触发。原因: 本流水线会连锁调用
+#   - _desktop.yml  → Windows / Ubuntu / macOS 三端桌面包
+#   - _publish.yml  → 发 beta Release
+# 每次 push 都白烧十几分钟, 其中 macOS runner 按 10 倍计费。
+#
+# 注意: 上游的 paths-ignore 只挡了 .md / assets / ISSUE_TEMPLATE / modules/web,
+# 改 ui/**、data/** 等源码一律会命中, 所以只要 push 代码就会自动跑起来。
+#
+# 需要跑测试或桌面包时, 到 Actions 页面选 "Test Build" → Run workflow 手动触发。
 on:
-  push:
-    branches:
-      - '**'
-    # 文档/资源类变更不触发完整 beta 构建发布
-    paths-ignore:
-      - '**.md'
-      - '**/assets/**'
-      - '**/ISSUE_TEMPLATE/**'
-      - '**/modules/web/**'
-  pull_request:
-    paths-ignore:
-      - '**.md'
-      - '**/assets/**'
-      - '**/ISSUE_TEMPLATE/**'
-      - '**/modules/web/**'
-  workflow_run:
-    workflows: [Build Web]
-    branches: [ '**' ]
-    types:
-      - completed
   workflow_dispatch:
 
 concurrency:

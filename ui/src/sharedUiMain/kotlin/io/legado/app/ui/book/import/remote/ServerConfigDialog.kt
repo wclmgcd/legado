@@ -6,6 +6,7 @@
 // Painter key (drawable):
 //   - ic_save (保存按钮)
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -58,8 +59,9 @@ import org.jetbrains.compose.resources.stringResource
  * # 字段对齐 (对照 app 端原版)
  *
  * - name: 服务器名称 (对应 app `name`)
- * - url / username / password: WebDav 配置三字段 (对应 app `getWebDavConfig()` 返回的 HashMap)
- * - TYPE 行: 固定显示 "WEBDAV" (原版 TYPE spinner 仅有 WEBDAV 单项, 退化为固定展示)
+ * - url / username / password: WebDav 配置三字段 (对应 app `getWebDavConfig()` 返回的 HashMap);
+ *   轻阅读后端 ([Server.TYPE.QREAD]) 复用同样三字段 (地址 / 账号 / 密码)
+ * - TYPE 行: 点击在 WEBDAV / QREAD 间切换 (原版 TYPE spinner 仅 WEBDAV 单项, 现扩展一项)
  *
  * # 序列化
  *
@@ -67,6 +69,8 @@ import org.jetbrains.compose.resources.stringResource
  * 下沉后用 [KS_JSON] + [Server.WebDavConfig] serializer 序列化,
  * 输出 JSON `{"url":"...","username":"...","password":"..."}` 与原版完全兼容
  * ([Server.getWebDavConfig] 用 `decodeOrNull<WebDavConfig>(config)` 反序列化, 双向兼容)。
+ * 轻阅读后端用 [Server.QReadConfig] serializer, 输出同形 JSON, 由
+ * [Server.getQReadConfig] 反序列化。
  *
  * @param server 待编辑的服务器 (null=新增), 调用方按 id 异步加载后传入
  * @param onSave 保存回调, 参数为组装后的 Server (调用方调 `ServerConfigViewModelShared.save` 并关闭对话框)
@@ -81,26 +85,38 @@ fun ServerConfigDialog(
     val colors = AppTheme.colors
     // 表单字段 (keyed by server, 切换编辑目标时重置, 与 DictRuleEditDialog 同模式)
     var name by remember(server) { mutableStateOf(server?.name.orEmpty()) }
-    val initConfig = remember(server) { server?.getWebDavConfig() }
-    var url by remember(server) { mutableStateOf(initConfig?.url.orEmpty()) }
-    var username by remember(server) { mutableStateOf(initConfig?.username.orEmpty()) }
-    var password by remember(server) { mutableStateOf(initConfig?.password.orEmpty()) }
+    // 服务器类型: WEBDAV (坚果云等) / QREAD (轻阅读后端, 见 io.legado.app.help.qread)。
+    // 两种 config 的 JSON 结构恰好同形 (url/username/password), 故共用下面三个输入框,
+    // 只在 getServer() 里按类型选不同的 serializer。
+    var serverType by remember(server) { mutableStateOf(server?.type ?: Server.TYPE.WEBDAV) }
+    val initWebDav = remember(server) { server?.getWebDavConfig() }
+    val initQRead = remember(server) { server?.getQReadConfig() }
+    var url by remember(server) { mutableStateOf(initQRead?.url ?: initWebDav?.url.orEmpty()) }
+    var username by remember(server) { mutableStateOf(initQRead?.username ?: initWebDav?.username.orEmpty()) }
+    var password by remember(server) { mutableStateOf(initQRead?.password ?: initWebDav?.password.orEmpty()) }
 
     /**
-     * 组装当前输入框值为 Server, 与 app 端 getServer() 完全等价:
+     * 组装当前输入框值为 Server, 与 app 端 getServer() 等价:
      * - 编辑已有服务器时 server?.copy() (保留原 id 等字段, 不污染传入实例);
      * - 新增时 new Server()。
-     * - type 固定为 WEBDAV (与 app 端一致)。
-     * - config 用 KS_JSON 序列化 WebDavConfig, 与 app 端 GSON.toJson(HashMap) 输出兼容。
+     * - type 取当前选中的 [serverType]; config 按类型分别用 [Server.WebDavConfig] /
+     *   [Server.QReadConfig] 的 serializer 序列化, 后者由 [Server.getQReadConfig] 反序列化。
      */
     fun getServer(): Server {
         val newServer = server?.copy() ?: Server()
         newServer.name = name
-        newServer.type = Server.TYPE.WEBDAV
-        newServer.config = KS_JSON.encodeToString(
-            Server.WebDavConfig.serializer(),
-            Server.WebDavConfig(url = url, username = username, password = password),
-        )
+        newServer.type = serverType
+        newServer.config = if (serverType == Server.TYPE.QREAD) {
+            KS_JSON.encodeToString(
+                Server.QReadConfig.serializer(),
+                Server.QReadConfig(url = url, username = username, password = password),
+            )
+        } else {
+            KS_JSON.encodeToString(
+                Server.WebDavConfig.serializer(),
+                Server.WebDavConfig(url = url, username = username, password = password),
+            )
+        }
         return newServer
     }
 
@@ -140,13 +156,24 @@ fun ServerConfigDialog(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                     )
-                    // 原 TYPE spinner 仅 WEBDAV 单项, 退化为固定展示 (与 app 端原版一致)
+                    // 点一下在 WEBDAV / QREAD 间切换。
+                    // QREAD = 轻阅读后端 (autobcb/read): 它不是 WebDav 数据源, 而是
+                    // 「书源 + 书架 + 记录」的同步中心, 故在 ServersDialog 里不参与
+                    // 「选为默认远程服务」的单选, 只提供同步入口。
                     Row(
-                        Modifier.padding(top = DesignTokens.spacingDefault),
+                        Modifier
+                            .padding(top = DesignTokens.spacingDefault)
+                            .clickable {
+                                serverType = if (serverType == Server.TYPE.WEBDAV) {
+                                    Server.TYPE.QREAD
+                                } else {
+                                    Server.TYPE.WEBDAV
+                                }
+                            },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("TYPE", color = colors.accent, modifier = Modifier.padding(DesignTokens.spacingDefault))
-                        Text("WEBDAV", color = colors.primaryText)
+                        Text(serverType.name, color = colors.primaryText)
                     }
                     AppUnderlineTextField(
                         value = url,

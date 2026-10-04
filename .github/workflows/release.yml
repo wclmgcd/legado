@@ -1,8 +1,11 @@
 name: Release Build
 
+# 【本 fork 已关闭自动触发】
+#
+# 上游的定时发布 (每月 1 日、15 日 00:00 UTC) 已移除, 只保留手动触发。
+# 原因: 与 test.yml 同理, 会连锁调用 _desktop.yml (含 macOS, 按 10 倍计费)
+# 和 _publish.yml, 在 fork 里没有意义。
 on:
-  schedule:
-    - cron: '0 0 1,15 * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -13,7 +16,7 @@ on:
         options:
           - release
 
-# 定时/手动触发时, 同一分支只跑一个实例, 取消旧实例避免重复 Release
+# 手动触发时, 同一分支只跑一个实例, 取消旧实例避免重复 Release
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
