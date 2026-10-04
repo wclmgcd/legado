@@ -1,0 +1,82 @@
+name: QRead Debug APK
+
+# 单一职责: 出一个可直接装机的 debug APK, **不需要任何签名 secret**。
+#
+# # 为什么不复用 release.yml / test.yml
+# 那两条流水线的 "Release Apk Sign" 步骤都**无条件**往 gradle.properties 写
+# `RELEASE_STORE_FILE=./key.jks`, 并用 secret 解出 key.jks。fork 出来没配
+# RELEASE_KEY_STORE 时, 解出来的是空文件, 而 app/build.gradle.kts 里
+# `if (project.hasProperty("RELEASE_STORE_FILE"))` 判断为真 → 拿空 keystore 去签名
+# → 构建失败。所以 fork 场景必须单独走一条 debug 流水线。
+#
+# debug buildType 不设 RELEASE_STORE_FILE 时会落到 AGP 自动生成的调试签名, 零配置可用。
+#
+# # 产物
+# 本次 Actions 运行页面底部的 Artifacts 区, 名字 `qread-debug-apk`。
+# ABI 分包开启, 会同时产出 armeabi-v7a / arm64-v8a / universal 三个包,
+# 手机装 universal 那个最稳。
+#
+# # 安装提示
+# debug 包名带 `.debug` 后缀 (shutiao.reader.debug), 可与正式版共存, 互不覆盖。
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: qread-debug-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          # app/build.gradle.kts 的 versionCode 用 `git rev-list HEAD --count` 算,
+          # shallow clone 下恒为 1, 故必须全量拉取。
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: 21
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Build debug APK
+        # 只编 app flavor 的 debug 变体。不传 -PappVersion, 版本号由构建脚本自算。
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleAppDebug --build-cache --parallel --warning-mode all
+
+      - name: Collect APKs
+        # 即便编译失败也收集, 便于判断是「没产出」还是「产出了但路径变了」。
+        if: always()
+        run: |
+          mkdir -p apk/
+          find app/build/outputs -name "*.apk" -exec cp {} apk/ \;
+          ls -la apk/ || true
+
+      - name: Upload APK
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: qread-debug-apk
+          path: apk/*.apk
+          if-no-files-found: warn
+
+      - name: Upload build reports
+        # 编译报错时 Kotlin/AGP 的详细报告在这里, 不用翻完整日志。
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: build-reports
+          path: |
+            **/build/reports/**
+          if-no-files-found: ignore
