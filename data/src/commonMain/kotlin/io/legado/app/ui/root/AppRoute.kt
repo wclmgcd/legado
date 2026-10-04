@@ -244,6 +244,16 @@ sealed interface AppRoute {
     @SerialName("backup_config")
     data object BackupConfig : AppRoute
 
+    /**
+     * 轻阅读后端 (autobcb/read) 配置与同步页。
+     *
+     * 独立成一页而不是塞进 [RemoteBook] 的服务器对话框: 后端不是 WebDav 数据源,
+     * 而是「书源 + 书架 + 记录」的同步中心, 藏在「添加远程书籍」里没人找得到。
+     */
+    @Serializable
+    @SerialName("qread_backend")
+    data object QReadBackend : AppRoute
+
     @Serializable
     @SerialName("other_config")
     data object OtherConfig : AppRoute

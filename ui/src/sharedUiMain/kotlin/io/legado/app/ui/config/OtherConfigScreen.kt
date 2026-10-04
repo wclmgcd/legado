@@ -60,9 +60,6 @@ import legado.ui.generated.resources.threads_num_title
 import legado.ui.generated.resources.update_to_variant_summary
 import legado.ui.generated.resources.update_to_variant_title
 import legado.ui.generated.resources.user_agent
-import legado.ui.generated.resources.web_port_title
-import legado.ui.generated.resources.web_service_wake_lock
-import legado.ui.generated.resources.web_service_wake_lock_summary
 import org.jetbrains.compose.resources.stringArrayResource
 import org.jetbrains.compose.resources.stringResource
 
@@ -70,6 +67,10 @@ import org.jetbrains.compose.resources.stringResource
  * 其它设置页（迁 pref_config_other.xml）。逐条对齐原条目顺序/key/默认值。
  * 开关/单选写 prefs（key 不变），副作用仍由宿主的 OnSharedPreferenceChangeListener 承接；
  * 动态 summary 与点击型交互（弹窗/NumberPicker/文件选择）由宿主传入。
+ *
+ * 本 fork 移除了内置 Web 服务相关条目：「Web 服务端口」与「Web 服务唤醒锁」
+ * （改用轻阅读后端同步后不再需要；Android 快捷设置磁贴若仍启动 Web 服务，
+ * 端口回退 [io.legado.app.help.config.AppConfigAccessor.webPort] 的默认值）。
  *
  * 下沉 shared/sharedUiMain:
  * - stringResource(R.string.xxx) → stringResource(Res.string.xxx)
@@ -83,7 +84,6 @@ fun OtherConfigScreen(
     checkSourceSummary: String,
     bitmapCacheSummary: String,
     preDownloadSummary: String,
-    webPortSummary: String,
     threadCountSummary: String,
     onLocalPassword: () -> Unit,
     onUserAgent: () -> Unit,
@@ -92,13 +92,12 @@ fun OtherConfigScreen(
     onUploadRule: () -> Unit,
     onBitmapCacheSize: () -> Unit,
     onPreDownloadNum: () -> Unit,
-    onWebPort: () -> Unit,
     onCleanCache: () -> Unit,
     onClearWebViewData: () -> Unit,
     onShrinkDatabase: () -> Unit,
     onThreadCount: () -> Unit,
     onCustomPageKey: () -> Unit,
-    /** 唤醒锁两项是否显示 (仅 Android 真持锁; 对照 PlatformCapabilities.wakeLockSupported) */
+    /** 音频播放唤醒锁是否显示 (仅 Android 真持锁; 对照 PlatformCapabilities.wakeLockSupported) */
     showWakeLock: Boolean = false,
     /** Cronet 开关是否显示 (仅 Android 注册了 CronetProvider) */
     showCronet: Boolean = false,
@@ -135,8 +134,6 @@ fun OtherConfigScreen(
     val titleLocalPassword = stringResource(Res.string.set_local_password)
     val summaryLocalPassword = stringResource(Res.string.set_local_password_summary)
     val titleUserAgent = stringResource(Res.string.user_agent)
-    val titleWebWakeLock = stringResource(Res.string.web_service_wake_lock)
-    val summaryWebWakeLock = stringResource(Res.string.web_service_wake_lock_summary)
     val titleAudioWakeLock = stringResource(Res.string.audio_play_wake_lock)
     val titlePublishLyric = stringResource(Res.string.publish_lyric)
     val summaryPublishLyric = stringResource(Res.string.publish_lyric_summary)
@@ -162,7 +159,6 @@ fun OtherConfigScreen(
     val titleUpdateToVariant = stringResource(Res.string.update_to_variant_title)
     val summaryUpdateToVariant = stringResource(Res.string.update_to_variant_summary)
     val titleAutoCheckUpdate = stringResource(Res.string.auto_check_update)
-    val titleWebPort = stringResource(Res.string.web_port_title)
     val titleCleanCache = stringResource(Res.string.clear_cache)
     val summaryCleanCache = stringResource(Res.string.clear_cache_summary)
     val titleClearWebView = stringResource(Res.string.clear_webview_data)
@@ -222,14 +218,9 @@ fun OtherConfigScreen(
                 summary = userAgentSummary,
                 onClick = onUserAgent,
             )
-            // 唤醒锁: 仅 Android 前台服务真持锁 (WebService / AudioPlayService), 其余端拨了没效果
+            // 唤醒锁: 仅 Android 前台服务真持锁 (AudioPlayService), 其余端拨了没效果。
+            // 本 fork 已移除内置 Web 服务, 原来的「Web 服务唤醒锁」开关一并去掉。
             if (showWakeLock) {
-                switchPreference(
-                    prefKey = PreferKey.webServiceWakeLock,
-                    title = titleWebWakeLock,
-                    summary = summaryWebWakeLock,
-                    defaultValue = false,
-                )
                 switchPreference(
                     prefKey = PreferKey.audioPlayWakeLock,
                     title = titleAudioWakeLock,
@@ -333,11 +324,6 @@ fun OtherConfigScreen(
                 prefKey = PreferKey.autoCheckUpdate,
                 title = titleAutoCheckUpdate,
                 defaultValue = true,
-            )
-            preference(
-                title = titleWebPort,
-                summary = webPortSummary,
-                onClick = onWebPort,
             )
             preference(
                 title = titleCleanCache,

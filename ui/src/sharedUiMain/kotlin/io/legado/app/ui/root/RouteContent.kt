@@ -22,6 +22,7 @@ import io.legado.app.ui.route.MainRoute
 import io.legado.app.ui.route.MangaReaderRoute
 import io.legado.app.ui.route.MyConfigRoute
 import io.legado.app.ui.route.OtherConfigRoute
+import io.legado.app.ui.route.QReadBackendRoute
 import io.legado.app.ui.route.ReadRecordRoute
 import io.legado.app.ui.route.ReadRssRoute
 import io.legado.app.ui.route.ReaderRoute
@@ -144,6 +145,11 @@ fun RouteContent(
 
         is AppRoute.OtherConfig -> {
             OtherConfigRoute(entry, navigator, screenModelStore)
+            true
+        }
+
+        is AppRoute.QReadBackend -> {
+            QReadBackendRoute(entry, navigator, screenModelStore)
             true
         }
 

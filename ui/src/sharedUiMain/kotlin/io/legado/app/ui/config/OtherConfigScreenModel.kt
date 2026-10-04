@@ -6,14 +6,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-/** 其它设置页的七个动态摘要。 */
+/** 其它设置页的动态摘要 (本 fork 去掉 Web 服务端口后剩六项)。 */
 data class OtherConfigUiState(
     val userAgentSummary: String = "",
     val bookTreeUriSummary: String = "",
     val checkSourceSummary: String = "",
     val bitmapCacheSummary: String = "",
     val preDownloadSummary: String = "",
-    val webPortSummary: String = "",
     val threadCountSummary: String = "",
 )
 
@@ -44,10 +43,6 @@ class OtherConfigScreenModel : ScreenModel {
 
     fun updatePreDownloadSummary(summary: String) {
         _state.update { it.copy(preDownloadSummary = summary) }
-    }
-
-    fun updateWebPortSummary(summary: String) {
-        _state.update { it.copy(webPortSummary = summary) }
     }
 
     fun updateThreadCountSummary(summary: String) {

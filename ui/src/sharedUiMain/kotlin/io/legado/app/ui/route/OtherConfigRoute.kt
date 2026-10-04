@@ -53,20 +53,20 @@ import legado.ui.generated.resources.sure_del
 import legado.ui.generated.resources.threads_num
 import legado.ui.generated.resources.threads_num_title
 import legado.ui.generated.resources.user_agent
-import legado.ui.generated.resources.web_port_summary
-import legado.ui.generated.resources.web_port_title
 import org.jetbrains.compose.resources.stringResource
 
 /**
  * 其它设置路由内容: 桥接 [OtherConfigScreenModel] 与 [OtherConfigScreen]。
  *
  * 点击型交互由 Route 直接执行：
- * - UA 编辑/图片缓存/预下载/Web 端口/线程数/自定义翻页按键: 用 shared 端 Compose 弹窗实现
+ * - UA 编辑/图片缓存/预下载/线程数/自定义翻页按键: 用 shared 端 Compose 弹窗实现
  *   (对照 app 端 alert DSL / showNumberPicker / PageKeyDialog)
  * - 本地密码/SAF 选目录/CheckSourceConfig/DirectLinkUploadConfig: 通过 [PlatformCapabilityProviders] 注入
  *   (对照 app 端 LocalConfig.password / HandleFileContract / showDialogFragment)
  * - 清缓存/收缩数据库: 下沉到 [ConfigActionsShared] (纯 Kotlin, 跨平台)
  * - 清 WebView 数据: 通过 [PlatformCapabilityProviders] 注入 (Android WebView 专属)
+ *
+ * 本 fork 去掉了「Web 服务端口」条目及其 NumberPicker 弹窗 (内置 Web 服务已不再从设置页开启)。
  */
 @Composable
 fun OtherConfigRoute(
@@ -85,7 +85,6 @@ fun OtherConfigRoute(
     // Summary 格式串 (对照 app 端 getString(R.string.xxx, value))
     val preDownloadFormat = stringResource(Res.string.pre_download_s)
     val threadCountFormat = stringResource(Res.string.threads_num)
-    val webPortFormat = stringResource(Res.string.web_port_summary)
     val bitmapCacheFormat = stringResource(Res.string.bitmap_cache_size_summary)
     val bookTreeUriSStr = stringResource(Res.string.book_tree_uri_s)
 
@@ -100,7 +99,6 @@ fun OtherConfigRoute(
     var showUserAgentDialog by remember { mutableStateOf(false) }
     var showBitmapCachePicker by remember { mutableStateOf(false) }
     var showPreDownloadPicker by remember { mutableStateOf(false) }
-    var showWebPortPicker by remember { mutableStateOf(false) }
     var showThreadCountPicker by remember { mutableStateOf(false) }
     var showCustomPageKey by remember { mutableStateOf(false) }
     var showLocalPasswordDialog by remember { mutableStateOf(false) }
@@ -116,7 +114,7 @@ fun OtherConfigRoute(
     }
     val state by screenModel.state.collectAsState()
 
-    // 对照 app 端 init: 初始化 7 个动态 summary
+    // 对照 app 端 init: 初始化动态 summary
     LaunchedEffect(Unit) {
         if (state.userAgentSummary.isEmpty()) {
             screenModel.updateUserAgentSummary(UserAgentProviders.get())
@@ -139,11 +137,6 @@ fun OtherConfigRoute(
                 preDownloadFormat.replace("%s", appConfig.preDownloadNum.toString())
             )
         }
-        if (state.webPortSummary.isEmpty()) {
-            screenModel.updateWebPortSummary(
-                webPortFormat.replace("%s", appConfig.webPort.toString())
-            )
-        }
         if (state.threadCountSummary.isEmpty()) {
             screenModel.updateThreadCountSummary(
                 threadCountFormat.replace("%s", appConfig.threadCount.toString())
@@ -162,7 +155,6 @@ fun OtherConfigRoute(
             checkSourceSummary = state.checkSourceSummary,
             bitmapCacheSummary = state.bitmapCacheSummary,
             preDownloadSummary = state.preDownloadSummary,
-            webPortSummary = state.webPortSummary,
             threadCountSummary = state.threadCountSummary,
             onLocalPassword = { showLocalPasswordDialog = true },
             onUserAgent = { showUserAgentDialog = true },
@@ -182,13 +174,12 @@ fun OtherConfigRoute(
             onUploadRule = { platform.showDirectLinkUploadConfigDialog() },
             onBitmapCacheSize = { showBitmapCachePicker = true },
             onPreDownloadNum = { showPreDownloadPicker = true },
-            onWebPort = { showWebPortPicker = true },
             onCleanCache = { showCleanCacheConfirm = true },
             onClearWebViewData = { showClearWebViewConfirm = true },
             onShrinkDatabase = { showShrinkDatabaseConfirm = true },
             onThreadCount = { showThreadCountPicker = true },
             onCustomPageKey = { showCustomPageKey = true },
-            // 唤醒锁两项只在真持锁的端显示 (Android 前台 WebService / AudioPlayService)
+            // 唤醒锁只在真持锁的端显示 (Android 前台 AudioPlayService; Web 服务唤醒锁已随条目移除)
             showWakeLock = platform.wakeLockSupported,
             // 以下几项都是"只有声明支持的端才真实消费该 pref"的条目, 不支持的端隐藏,
             // 免得用户拨了一个完全无效的开关 (各 gate 的判定依据见 PlatformCapabilities)
@@ -260,23 +251,6 @@ fun OtherConfigRoute(
                 )
             },
             onDismiss = { showPreDownloadPicker = false },
-        )
-    }
-
-    // Web 端口 NumberPicker (对照 app 端 onWebPort: 1024..60000)
-    if (showWebPortPicker) {
-        NumberPickerDialog(
-            title = stringResource(Res.string.web_port_title),
-            value = appConfig.webPort,
-            range = 1024..60000,
-            onConfirm = {
-                pref.putInt(PreferKey.webPort, it)
-                // 对照 app 端 onSharedPreferenceChanged: web_port_summary
-                screenModel.updateWebPortSummary(
-                    webPortFormat.replace("%s", it.toString())
-                )
-            },
-            onDismiss = { showWebPortPicker = false },
         )
     }
 

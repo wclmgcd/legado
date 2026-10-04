@@ -6,11 +6,9 @@ import io.legado.app.ui.compose.preference.PreferenceScreen
 import io.legado.app.ui.compose.preference.listPreference
 import io.legado.app.ui.compose.preference.preference
 import io.legado.app.ui.compose.preference.preferenceCategory
-import io.legado.app.ui.compose.preference.switchPreference
 import io.legado.app.ui.compose.theme.AppTheme
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.about
-import legado.ui.generated.resources.backup_restore
 import legado.ui.generated.resources.book_source
 import legado.ui.generated.resources.book_source_manage
 import legado.ui.generated.resources.book_source_manage_desc
@@ -19,7 +17,6 @@ import legado.ui.generated.resources.dict_rule
 import legado.ui.generated.resources.ic_bookmark
 import legado.ui.generated.resources.ic_bug_report
 import legado.ui.generated.resources.ic_cfg_about
-import legado.ui.generated.resources.ic_cfg_backup
 import legado.ui.generated.resources.ic_cfg_other
 import legado.ui.generated.resources.ic_cfg_replace
 import legado.ui.generated.resources.ic_cfg_source
@@ -41,8 +38,6 @@ import legado.ui.generated.resources.theme_mode_v
 import legado.ui.generated.resources.theme_setting
 import legado.ui.generated.resources.theme_setting_s
 import legado.ui.generated.resources.txt_toc_rule
-import legado.ui.generated.resources.web_dav_set_import_old
-import legado.ui.generated.resources.web_service
 import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringArrayResource
 import org.jetbrains.compose.resources.stringResource
@@ -61,8 +56,7 @@ import org.jetbrains.compose.resources.stringResource
  *
  * ### Painter key (drawable)
  * - `ic_cfg_theme`        主题/外观（listPreference + preference 共用）
- * - `ic_cfg_backup`       备份/恢复
- * - `ic_cfg_web`          web 服务
+ * - `ic_cfg_web`          轻阅读后端（复用原「web 服务」的网络图标）
  * - `ic_cfg_other`        其它设置入口
  * - `ic_cfg_source`       书源/目录规则
  * - `ic_cfg_replace`      替换净化
@@ -77,8 +71,6 @@ import org.jetbrains.compose.resources.stringResource
  * ### String key (string)
  * - `theme_mode`                主题模式（标题）
  * - `theme_setting` / `theme_setting_s`
- * - `backup_restore` / `web_dav_set_import_old`
- * - `web_service`
  * - `other_setting`
  * - `book_source`               分类标题
  * - `book_source_manage` / `book_source_manage_desc`
@@ -86,6 +78,10 @@ import org.jetbrains.compose.resources.stringResource
  * - `dict_rule` / `rule_subscription`
  * - `other`                     分类标题
  * - `bookmark` / `read_record` / `source_toolbox` / `about`
+ *
+ * 注: 「轻阅读后端」条目的标题/副标题是字面量, 不走资源表 (fork 独有功能,
+ * 不往上游 strings 里塞 key)。原 `backup_restore` / `web_dav_set_import_old` /
+ * `web_service` 三个 key 已随条目移除不再使用。
  *
  * ### StringArray key (string-array)
  * - `theme_mode`        主题模式名（系统/亮/暗/E-Ink）
@@ -95,13 +91,9 @@ import org.jetbrains.compose.resources.stringResource
  */
 @Composable
 fun MyConfigScreen(
-    webServiceChecked: Boolean,
-    webServiceSummary: String,
     onThemeModeChange: () -> Unit,
-    onWebServiceChange: (Boolean) -> Unit,
-    onWebServiceLongClick: () -> Unit,
     onThemeSetting: () -> Unit,
-    onWebDavSetting: () -> Unit,
+    onQReadBackend: () -> Unit,
     onOtherSetting: () -> Unit,
     onBookSourceManage: () -> Unit,
     onReplaceManage: () -> Unit,
@@ -120,9 +112,10 @@ fun MyConfigScreen(
     val titleThemeMode = stringResource(Res.string.theme_mode)
     val titleThemeSetting = stringResource(Res.string.theme_setting)
     val summaryThemeSetting = stringResource(Res.string.theme_setting_s)
-    val titleBackupRestore = stringResource(Res.string.backup_restore)
-    val summaryWebDav = stringResource(Res.string.web_dav_set_import_old)
-    val titleWebService = stringResource(Res.string.web_service)
+    // 本 fork 已去掉 WebDav 备份与内置 Web 服务两项 (改用轻阅读后端同步), 见下方注释。
+    // 轻阅读后端用字面量而非 string 资源: 这是 fork 独有功能, 不往上游资源表里塞 key。
+    val titleQReadBackend = "轻阅读后端"
+    val summaryQReadBackend = "连接自建的轻阅读后端，同步书源、书架与记录"
     val titleOtherSetting = stringResource(Res.string.other_setting)
     val titleBookSource = stringResource(Res.string.book_source)
     val titleBookSourceManage = stringResource(Res.string.book_source_manage)
@@ -140,7 +133,7 @@ fun MyConfigScreen(
 
     // rememberPainter 是 @Composable，须在此层取值，不能在 LazyListScope 构建 lambda 内调用
     val iconTheme = painterResource(Res.drawable.ic_cfg_theme)
-    val iconBackup = painterResource(Res.drawable.ic_cfg_backup)
+    // 复用原「Web 服务」的网络图标给轻阅读后端 (同为「连一个外部服务」的语义)
     val iconWeb = painterResource(Res.drawable.ic_cfg_web)
     val iconOther = painterResource(Res.drawable.ic_cfg_other)
     val iconSource = painterResource(Res.drawable.ic_cfg_source)
@@ -170,21 +163,13 @@ fun MyConfigScreen(
                 icon = iconTheme,
                 onClick = onThemeSetting,
             )
+            // 【本 fork 移除】原「备份与恢复」(跳 WebDav 设置页) 与「Web 服务」开关。
+            // 用轻阅读后端做同步后这两项都用不上, 换成下面的轻阅读后端入口。
             preference(
-                title = titleBackupRestore,
-                summary = summaryWebDav,
-                icon = iconBackup,
-                onClick = onWebDavSetting,
-            )
-            switchPreference(
-                prefKey = PreferKey.webService,
-                title = titleWebService,
-                summary = webServiceSummary,
-                defaultValue = false,
+                title = titleQReadBackend,
+                summary = summaryQReadBackend,
                 icon = iconWeb,
-                onCheckedChange = onWebServiceChange,
-                onLongClick = onWebServiceLongClick,
-                checked = webServiceChecked,
+                onClick = onQReadBackend,
             )
             preference(
                 title = titleOtherSetting,
