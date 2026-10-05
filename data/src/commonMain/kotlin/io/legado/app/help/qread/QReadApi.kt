@@ -139,8 +139,11 @@ object QReadApi {
     /**
      * 取书源列表某一页 (页码从 1 开始)。须先用 [getBookSourcesPage] 拿到 md5。
      *
-     * 注意返回的是**精简投影** (见 [QReadSourceBrief]), 只用来取 `bookSourceUrl`,
-     * 不要拿它直接建 legado 的 `BookSource`。
+     * 返回的是**精简投影** (见 [QReadSourceBrief]) —— 不要拿它直接建 legado 的 `BookSource`,
+     * 那样只有名字没有规则。它的用途有两个:
+     * 1. 取 `bookSourceUrl`, 去 [getBookSourceJson] 换回完整规则;
+     * 2. 取 `enabled` / `enabledExplore` / `bookSourceGroup` —— 这三个在后端是**表列**,
+     *    是权威值, 必须用来覆盖 json 里的旧快照 (后台禁用只改列不改 json)。
      */
     suspend fun getBookSourcesNew(
         serverUrl: String,

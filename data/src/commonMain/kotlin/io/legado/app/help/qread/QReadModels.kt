@@ -83,16 +83,46 @@ data class QReadPageInfo(
  * **没有 `ruleSearch` / `ruleToc` / `ruleContent` / `ruleBookInfo` / `ruleExplore` /
  * `searchUrl` / `exploreUrl` / `header` / `jsLib` 等** —— 这是给「书源列表」界面渲染用的。
  *
- * 所以本类型**只用来取 `bookSourceUrl`**, 再拿它去调 [QReadApi.getBookSourceJson]
- * 批量换回完整书源 JSON。直接拿列表项建 `BookSource` 会得到一堆没有规则的废源。
+ * 所以本类型**不能**直接建 `BookSource`, 会得到一堆没有规则的废源。
+ *
+ * # 但它有三个字段是「权威值」(关键)
+ * 本类型有两个用途, 缺一不可:
+ * 1. 取 `bookSourceUrl` → 调 [QReadApi.getBookSourceJson] 批量换回完整规则;
+ * 2. 取 [enabled] / [enabledExplore] / [bookSourceGroup] → **覆盖** json 里的同名字段。
+ *
+ * 因为这三个在后端是**独立表列** (后台点「禁用」、改分组改的就是列), 而 `bookSource.json`
+ * 里的是「上传书源那一刻」的旧快照 —— 后端 `getbookSourcejson` 只拼 json 列, 完全不带列。
+ * 只走 json 会让**后台禁用的书源同步过来全是启用的**。合流见 [QReadMapper.applyServerState]。
+ *
+ * # 为什么这里**不**声明 loginUrl / loginUi
+ * 它们确实在后端列表里, 但那份 `loginUi` 是后端**执行完 JS 之后**的结果
+ * (`getBookSourcesPage` 里 `loginUi = s.getloginUi(false)`), 而 legado 需要的是**原始规则**
+ * (legado 有自己的 JS 引擎, 会自己执行)。json 列里存的正是原始值, 所以这两个字段
+ * 一律以 json 为准, 不从本投影取。
  */
 @Serializable
 data class QReadSourceBrief(
     val bookSourceUrl: String = "",
     val bookSourceName: String = "",
+    /**
+     * 分组**名称**; 后端列 `bookSourceGroup`, `null` 表示未分组。
+     *
+     * 注意后端的 `Snack` 序列化**会直接省略值为 null 的字段** (实测 50 条里只有 47 条
+     * 带这个 key, 少的那 3 条就是未分组) —— 所以「key 缺失」和「值为 null」在这里
+     * 是同一件事, 都由本字段的默认值 `null` 接住, 语义正确。
+     */
     val bookSourceGroup: String? = null,
-    val enabled: Boolean = true,
-    val enabledExplore: Boolean = true,
+    /**
+     * 是否启用。后端列 `enabled`, 后台「禁用」改的就是它。
+     *
+     * 声明成可空**不是为了接受 null**, 而是防御: 后端 `BaseSource.enabled` 是非空
+     * `Boolean` (实测 50/50 都有值), 但一旦哪天返回 null / 省略该 key, 非空声明会让
+     * kotlinx 抛 `SerializationException` → **整页 brief 解析失败 → 全部书源同步挂掉**。
+     * 可空 + 调用侧 `?:` 兜底, 最坏也只是退化成「保留 json 里的值」。
+     */
+    val enabled: Boolean? = null,
+    /** 是否启用发现。后端列 `enabledExplore`, 后端类型是**可空** `Boolean?`, 故必须可空。 */
+    val enabledExplore: Boolean? = null,
 )
 
 /**

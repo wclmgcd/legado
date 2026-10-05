@@ -2,6 +2,7 @@ package io.legado.app.help.qread
 
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.SearchKeyword
 import io.legado.app.utils.systemCurrentTimeMillis
@@ -61,6 +62,45 @@ object QReadMapper {
         1, BookType.audio -> BookType.audio
         2, BookType.image -> BookType.image
         else -> remoteType.takeIf { it and BookType.allBookType != 0 } ?: BookType.text
+    }
+
+    /**
+     * 把后端**表列**里的权威状态覆盖到「从 `bookSource.json` 解析出来的书源」上。
+     *
+     * # 为什么必须做这一步 (这是最容易漏的一环)
+     * 后端的书源分两处存:
+     *
+     * | 存储位置 | 内容 | 谁在写 |
+     * |---|---|---|
+     * | `book_source.json` / `user_book_source.json` (**LONGTEXT**) | 完整书源规则 (`rule*`/`searchUrl`/`header`/`jsLib`/`loginUrl`/`loginUi` ...) | 上传书源时的**快照** |
+     * | 表**列** `enabled` / `enabledExplore` / `bookSourceGroup` / `sourceorder` / `bookSourceType` | 启用状态、启用发现、分组、排序、类型 | 后台管理界面/App 改的是**列** |
+     *
+     * 后端 `getbookSourcejson` 只拼 `json` 列:
+     * ```kotlin
+     * val bookSource = ...toBaseSource()
+     * s = "$s ${bookSource.json}"      // ← 完全没带 enabled 列
+     * ```
+     * 而 `/getBookSourcesNew` 才是从列里取值 (`"enabled" to it.enabled`)。
+     *
+     * 后果: 用户在后端点「禁用」只改列, `json` 里的 `enabled` 仍是上传时的 `true`
+     * → 只走 json 同步会让**所有书源都变成启用**, 禁用状态全部丢失。同理分组。
+     *
+     * 所以 [QReadSync] 的书源同步是「json 拿规则 + brief 拿状态」两路合流, 这里负责合流。
+     *
+     * @param brief 来自 `/getBookSourcesNew`, 字段取自后端表列, 是**权威值**
+     */
+    fun applyServerState(src: BookSource, brief: QReadSourceBrief): BookSource {
+        // legado 的 `enabled` / `enabledExplore` 是**非空** Boolean, 而 brief 里声明成了
+        // 可空 (防御性, 见 [QReadSourceBrief.enabled] 的说明)。所以用 `?.let`:
+        // 后端给了值就用后端的 (权威), 没给就保留 json 里的旧值 —— 绝不能因为一个 null
+        // 就让整批同步抛异常。
+        brief.enabled?.let { src.enabled = it }
+        brief.enabledExplore?.let { src.enabledExplore = it }
+        // 分组则相反, **直接赋值**而不是 `?:` 保留旧值: 后端列里 `null` 就是「未分组」,
+        // 是有意义的语义 (Snack 会省略该 key, kotlinx 用默认值 null 接住)。
+        // 保留 json 里的旧分组反而会同步出一个后端已经不存在的分组。
+        src.bookSourceGroup = brief.bookSourceGroup
+        return src
     }
 
     /**

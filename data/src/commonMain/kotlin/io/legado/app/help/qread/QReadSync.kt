@@ -182,12 +182,12 @@ object QReadSync {
     // ---------------------------------------------------------------------
 
     /**
-     * 书源同步 —— **三步协议**, 少一步都拿不到数据。
+     * 书源同步 —— **三步协议 + 两路合流**, 少一步都拿不到完整数据。
      *
      * ```
      * 1) GET  /getBookSourcesPage            -> {page, md5}   (后端顺带把每页写进缓存)
-     * 2) GET  /getBookSourcesNew?md5&page=N  -> [精简投影...]  (只取 bookSourceUrl)
-     * 3) POST /getbookSourcejson  body=[url] -> "[完整书源 JSON 数组]"  (字符串)
+     * 2) GET  /getBookSourcesNew?md5&page=N  -> [精简投影...]  (拿 bookSourceUrl + 权威状态)
+     * 3) POST /getbookSourcejson  body=[url] -> "[完整书源 JSON 数组]"  (拿规则)
      * ```
      *
      * # 为什么不能只用第 2 步
@@ -198,12 +198,26 @@ object QReadSync {
      * `searchUrl` / `exploreUrl` / `header` / `jsLib`**。直接拿它建 `BookSource`
      * 会得到一堆「有名字没规则」的废源, 搜索、目录、正文全部不可用。
      *
+     * # 为什么也不能只用第 3 步 (最容易漏的一环)
+     * 后端把书源**分两处存**:
+     * - `json` 列 (LONGTEXT): 完整规则 (`rule*` / `searchUrl` / `header` / `jsLib` /
+     *   `loginUrl` / `loginUi` ...), 由 `Gson().toJson(bookSource)` 写入;
+     * - 表**列** `enabled` / `enabledExplore` / `bookSourceGroup` / `sourceorder`:
+     *   后台管理界面和 App 改的是这些。
+     *
+     * 而 `getbookSourcejson` 只拼 `json` 列 (`s = "$s ${bookSource.json}"`), **不带列**;
+     * `json` 里的 `enabled` 只是「上传书源那一刻」的快照 —— 后端 `addorupdate` 更新时
+     * 特意 `source.enabled = it.enabled` 保住列上的用户选择, 却仍把 json 覆盖成新内容。
+     *
+     * 所以**只走第 3 步会让后台禁用的书源同步过来全是启用的、分组回到上传时的旧值**。
+     * 必须用第 2 步的 brief 覆盖这几个字段, 见 [QReadMapper.applyServerState]。
+     *
      * # 为什么第 3 步不需要字段映射
      * 后端存的就是 legado 格式的 `bookSource.json` (轻阅读 fork 了 legado 的规则引擎),
      * 25+ 个字段与 legado 的 `BookSource` 实体一一对应, 连 `ruleSearch` 这种
      * 「JSON 对象 vs 字符串」的差异也由实体上的 `RawJsonStringSerializer` 处理掉了。
      * 所以拆成数组后**逐条** `GSON.fromJsonObject<BookSource>(...)` 即可,
-     * **手写字段映射必漏字段**。
+     * **手写字段映射必漏字段** (但上面那 3 个状态字段是例外 —— 它们压根不在 json 里)。
      *
      * 以**后端为准** (而不是合并): 轻阅读的书源由服务端统一维护, 本地改动会在下次
      * 同步被覆盖, 这是预期行为 —— 想保留本地改动就不要用后端书源同步。
@@ -225,10 +239,15 @@ object QReadSync {
         }
         val totalPages = (pageResp.data?.page ?: 1).coerceAtLeast(1)
 
-        // ---- 第 2 步: 逐页取 URL ----
-        // 用 LinkedHashSet 去重: 后端列表里同一站点出现多次是正常的 (http/https 前缀不同、
-        // 同一书源被分组多次导入等), 重复传会让第 3 步的响应白白翻倍。
-        val urls = linkedSetOf<String>()
+        // ---- 第 2 步: 逐页取 URL + 服务端状态 ----
+        // 用 LinkedHashMap 去重 (同一站点出现多次是正常的: http/https 前缀不同、同一书源被
+        // 分组多次导入等), 重复传会让第 3 步的响应白白翻倍。
+        //
+        // 同时把 brief **留下来**: 它的 `enabled` / `enabledExplore` / `bookSourceGroup` 取自
+        // 后端**表列**, 是权威值; 而第 3 步 json 里这几个字段是「上传书源那一刻」的旧快照。
+        // 后端点「禁用」只改列不改 json, 所以只走 json 会让禁用状态全部丢失 ——
+        // 合流逻辑见 [QReadMapper.applyServerState]。
+        val briefByUrl = linkedMapOf<String, QReadSourceBrief>()
         for (page in 1..totalPages) {
             val resp = QReadApi.getBookSourcesNew(url, token, md5, page)
             if (!resp.isSuccess) {
@@ -236,16 +255,16 @@ object QReadSync {
                 continue
             }
             resp.data.orEmpty().forEach { brief ->
-                brief.bookSourceUrl.takeIf { it.isNotBlank() }?.let { urls.add(it) }
+                brief.bookSourceUrl.takeIf { it.isNotBlank() }?.let { briefByUrl[it] = brief }
             }
         }
-        if (urls.isEmpty()) return 0
+        if (briefByUrl.isEmpty()) return 0
 
         // ---- 第 3 步: 分批导出完整 JSON 并落库 ----
         val dao = AppDbProviders.get().bookSourceDao
         var written = 0
         var skipped = 0
-        urls.chunked(SOURCE_EXPORT_BATCH).forEach { batch ->
+        briefByUrl.keys.chunked(SOURCE_EXPORT_BATCH).forEach { batch ->
             val resp = QReadApi.getBookSourceJson(url, token, batch)
             if (!resp.isSuccess) {
                 AppLog.put("轻阅读书源导出失败(${batch.size} 个): ${resp.errorMsg}")
@@ -273,6 +292,11 @@ object QReadSync {
                     .onFailure { skipped++ }
                     .getOrNull()
                     ?.takeIf { it.bookSourceUrl.isNotBlank() }
+                    // json 只给「规则」; 启用状态 / 启用发现 / 分组必须用第 2 步的 brief
+                    // (后端表列 = 权威值) 覆盖, 否则后台禁用的书源同步过来全是启用的。
+                    ?.also { src ->
+                        briefByUrl[src.bookSourceUrl]?.let { QReadMapper.applyServerState(src, it) }
+                    }
             }
             if (valid.isEmpty()) return@forEach
             dao.insert(*valid.toTypedArray())
