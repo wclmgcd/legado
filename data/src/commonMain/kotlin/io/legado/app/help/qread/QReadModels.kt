@@ -1,13 +1,12 @@
 package io.legado.app.help.qread
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonObject
 
 /**
  * 轻阅读后端 (autobcb/read) 接口数据模型。
  *
  * # 背景
- * 轻阅读把书源规则引擎放在**服务端** (Java + Rhino), 客户端只是展示层; 而 legado 把引擎
+ * 轻阅读把书源规则引擎放在**服务端** (Kotlin + Rhino), 客户端只是展示层; 而 legado 把引擎
  * 放在**客户端本地**。本包提供一套最小客户端, 让 legado 能把轻阅读后端当作
  * 「数据源 + 同步中心」使用。
  *
@@ -20,16 +19,21 @@ import kotlinx.serialization.json.JsonObject
  * `data` 的具体类型随接口而变 (对象 / 数组 / 字符串 / null), 故无把握时用
  * `QReadResponse<JsonElement>` 兜底。
  *
+ * **注意**: `data` 缺失时后端会**整个字段不输出** (Snack 不序列化 null),
+ * 例如 `{"isSuccess":true,"errorMsg":"success"}`。所以 `data` 必须声明为可空 + 有默认值。
+ *
  * # 字段兼容性 (重要)
- * 轻阅读的 [QReadBookSource] / [QReadBook] 与 legado 的
- * `io.legado.app.data.entities.BookSource` / `Book` **同源** (轻阅读 fork 了 legado 的
- * 规则引擎), 绝大多数字段名一一对应。但有 3 处必须做转换, 见 [QReadMapper]:
- * 1. 书源 `ruleXxx` 后端是**对象**, legado 存的是 **JSON 字符串**;
- * 2. 书架 `durChapterPos` 后端是 `Double`, legado 是 `Int`;
- * 3. 书架 `bookgroup` 后端是分组名字符串, legado 的 `Book.group` 是本地 `BookGroup.id`。
+ * 轻阅读的 [QReadBook] 与 legado 的 `io.legado.app.data.entities.Book` **同源**
+ * (轻阅读 fork 了 legado 的规则引擎), 字段名一一对应, 但有 2 处**类型/语义不同**,
+ * 必须显式转换, 见 [QReadMapper]:
+ * 1. 书架 `durChapterPos` 后端是 **章节内比例 (Double, 0.0~1.0)**, legado 是**正文字符偏移 (Int)**;
+ * 2. 书架 `type` 后端是**单值索引** (0 文本 / 1 音频 / 2 图片), legado 是 **`BookType` 位掩码**
+ *    (text=8 / audio=32 / image=64)。
+ *
+ * 书源则**无需任何转换** —— 见 [QReadSourceBrief] 的说明。
  */
 
-/** 后端统一响应包装。`data` 为空时保持 null。 */
+/** 后端统一响应包装。`data` 为空 / 缺失时保持 null。 */
 @Serializable
 data class QReadResponse<T>(
     val isSuccess: Boolean = false,
@@ -38,50 +42,57 @@ data class QReadResponse<T>(
 )
 
 /**
- * `/getBookshelfPage` 响应: 书架分页准备信息。
+ * `/login` 响应体。
  *
- * 后端流程是两步: 先调 `getBookshelfPage` 拿到总页数与 `md5` (本次书架快照标识),
- * 再按页调 `getBookshelfNew(accessToken, md5, page)` 取每页数据。
- * 缓存 key 里带 md5, 书架变更后 md5 变化即自然失效。
+ * 实测 (后端 3.4.4) 返回:
+ * ```
+ * {"isSuccess":true,"errorMsg":"success","data":{"accessToken":"8a90dc55-..."}}
+ * ```
+ * 即 `data` 是**对象**而不是裸字符串 —— 对应后端
+ * `UserController.login` 的 `JsonResponse(true,"success").Data(mapOf("accessToken" to tocken.id))`。
  */
 @Serializable
-data class QReadShelfPage(
+data class QReadLoginResult(
+    val accessToken: String = "",
+)
+
+/**
+ * 分页准备响应 (`/getBookshelfPage`、`/getBookSourcesPage` 等共用同一形状)。
+ *
+ * 后端流程是两步: 先调 `getXxxPage` 拿到总页数与 `md5` (本次快照标识, 后端同时把每页数据
+ * 写进服务端缓存), 再按页调 `getXxxNew(accessToken, md5, page)`。
+ * 缓存 key 里带 md5, 数据变更后 md5 变化即自然失效。
+ *
+ * **跳过第一步直接调 `getXxxNew` 会拿到空结果** —— 这是个容易踩的坑。
+ */
+@Serializable
+data class QReadPageInfo(
     val page: Int = 1,
     val md5: String = "",
 )
 
 /**
- * 轻阅读书源。
+ * `/getBookSourcesNew` 列表项 —— **精简投影**, 只有 9 个字段。
  *
- * 与 legado `BookSource` 字段同名同义; 差异集中在 `ruleXxx`:
- * 后端返回的是**结构化对象** (ExploreRule/SearchRule/...), 而 legado 实体存的是
- * **该对象的 JSON 字符串**。用 [JsonObject] 接住原文, 由 [QReadMapper.toLegadoBookSource]
- * 转成字符串即可, 无需在本文件里为 5 种规则各建一套模型 (后端加字段也不会漏)。
+ * # 为什么不能用它当书源用
+ * 后端 `SourceController.getBookSourcesPage` 写进缓存的每条记录只有:
+ * ```
+ * checkKeyWord / variableComment / bookSourceGroup / loginUrl / loginUi
+ * bookSourceName / bookSourceUrl / enabledExplore / enabled
+ * ```
+ * **没有 `ruleSearch` / `ruleToc` / `ruleContent` / `ruleBookInfo` / `ruleExplore` /
+ * `searchUrl` / `exploreUrl` / `header` / `jsLib` 等** —— 这是给「书源列表」界面渲染用的。
+ *
+ * 所以本类型**只用来取 `bookSourceUrl`**, 再拿它去调 [QReadApi.getBookSourceJson]
+ * 批量换回完整书源 JSON。直接拿列表项建 `BookSource` 会得到一堆没有规则的废源。
  */
 @Serializable
-data class QReadBookSource(
+data class QReadSourceBrief(
     val bookSourceUrl: String = "",
     val bookSourceName: String = "",
     val bookSourceGroup: String? = null,
-    val bookSourceType: Int = 0,
-    val bookUrlPattern: String? = null,
-    val customOrder: Int = 0,
     val enabled: Boolean = true,
     val enabledExplore: Boolean = true,
-    val loginCheckJs: String? = null,
-    val coverDecodeJs: String? = null,
-    val bookSourceComment: String? = null,
-    val variableComment: String? = null,
-    val lastUpdateTime: Long = 0L,
-    val respondTime: Long = 180000L,
-    val weight: Int = 0,
-    val exploreUrl: String? = null,
-    val searchUrl: String? = null,
-    val ruleExplore: JsonObject? = null,
-    val ruleSearch: JsonObject? = null,
-    val ruleBookInfo: JsonObject? = null,
-    val ruleToc: JsonObject? = null,
-    val ruleContent: JsonObject? = null,
 )
 
 /**
@@ -114,7 +125,14 @@ data class QReadBook(
     val intro: String? = null,
     val customIntro: String? = null,
     val charset: String? = null,
-    /** @see io.legado.app.constant.BookType */
+    /**
+     * 书籍类型, **单值索引**: `0` 文本 / `1` 音频 / `2` 图片。
+     *
+     * 后端 `Booklist.type` 的 setter 会把写入值归一化:
+     * `32,1 -> 1`(音频)、`64,2 -> 2`(图片)、其余 -> `0`(文本)。
+     * **不能直接赋给 legado 的 `Book.type`** —— 那是 `BookType` 位掩码
+     * (text=8 / audio=32 / image=64), 见 [QReadMapper.toLegadoBook]。
+     */
     val type: Int? = null,
     /** 分组**名称** (不是 id), 与 legado 的 `Book.group: Long` 语义不同。 */
     val bookgroup: String? = null,
@@ -125,7 +143,15 @@ data class QReadBook(
     val totalChapterNum: Int? = null,
     val durChapterTitle: String? = null,
     val durChapterIndex: Int? = null,
-    /** 后端是 Double (百分比/比例), legado `Book.durChapterPos` 是 Int (字符偏移)。 */
+    /**
+     * 章节内阅读进度, **比例** (0.0 ~ 1.0), 不是字符偏移。
+     *
+     * 依据: 后端 `BookshelfController.getBookshelfPage` 把该值钳到 `0.0..2.0`,
+     * 实测线上数据全是干净分数 (1/9=0.1111、1/4=0.25、13/16=0.8125 ...),
+     * 且后端只存不解释 —— 写什么读什么。官方客户端发的是比例。
+     * legado 的 `Book.durChapterPos` 是**正文字符偏移**, 两者换算需要正文长度,
+     * 同步阶段拿不到, 故 [QReadMapper.toLegadoBook] 只能置 0。
+     */
     val durChapterPos: Double? = null,
     val durChapterTime: Long? = null,
     val wordCount: String? = null,
@@ -141,5 +167,6 @@ data class QReadGroup(
     /** 分组名称。 */
     val bookgroup: String? = null,
     val grouporder: Int? = null,
+    /** 后端用 Snack 按 `yyyy-MM-dd HH:mm:ss` 格式化, 所以是字符串不是时间戳。 */
     val createtime: String? = null,
 )

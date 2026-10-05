@@ -5,6 +5,9 @@ import io.legado.app.help.http.OkHttpClientProviders
 import io.legado.app.help.http.get
 import io.legado.app.help.http.newCallStrResponse
 import io.legado.app.help.http.postForm
+import io.legado.app.help.http.postJson
+import io.legado.app.utils.GSON
+import io.legado.app.utils.toJson
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 
@@ -28,6 +31,32 @@ import kotlinx.serialization.json.JsonElement
  * 后端用 Solon 框架, `@Mapping` 未指定 method 时接受所有 HTTP 方法,
  * 因此查询类接口用 GET 带 query 即可; 登录走 POST form, 与后端
  * `login(username, password, model)` 形参一一对应。
+ *
+ * # 两步分页协议 (最容易踩的坑)
+ * 书架 / 书源 / 替换规则 / RSS / TTS 的列表接口都是**两步**:
+ * 1. `GET /getXxxPage` → 返回 `{page, md5}`, **并把每页数据写进服务端缓存**;
+ * 2. `GET /getXxxNew?accessToken&md5&page=N` → 由后端 `@Cache` 注解命中缓存返回数据。
+ *
+ * `getXxxNew` 方法体本身只 `return JsonResponse(false)`, 真正的数据来自 `@Cache` 拦截。
+ * 所以**跳过第 1 步直接调第 2 步只会拿到 `isSuccess=false`**。
+ *
+ * 缓存 key 形如 `"getXxxNew:${accessToken}${md5}${page}"` (见后端
+ * `BookshelfController` / `SourceController`), 因此 `md5` 必须与第 1 步返回的**完全一致**。
+ *
+ * # 已实测确认的响应形状 (后端 3.4.4)
+ * | 接口 | `data` 形状 |
+ * |---|---|
+ * | `/login` | **对象** `{"accessToken":"..."}` |
+ * | `/getUserInfo` | 对象 `{"userInfo":{username,phone,email}}` |
+ * | `/getBookshelfPage` | 对象 `{page, md5}` |
+ * | `/getBookSourcesPage` | 对象 `{page, md5}` |
+ * | `/getBookshelfNew` | 数组 (完整 Booklist) |
+ * | `/getBookSourcesNew` | 数组 (**只有 9 个字段的精简投影**) |
+ * | `/getgroupNew` | 数组 (BookGroup) |
+ * | `/getbookSourcejson` | **字符串**, 内容是完整书源 JSON 数组 |
+ * | `/getBookread` | **字符串** (逗号分隔的已读章节) |
+ * | `/getitem` | 字符串 / **字段整个缺失** |
+ * | `/saveBookProgress` | **字符串** (逗号分隔的已读章节) |
  */
 object QReadApi {
 
@@ -57,16 +86,20 @@ object QReadApi {
     // ---------------------------------------------------------------------
 
     /**
-     * 登录, 返回的 `data` 即 `accessToken`。
+     * 登录。
      *
-     * @param model 设备标识, 后端仅作记录; 传 `legado-ios` 便于在后台区分设备。
+     * 返回的 `data` 是**对象** `{"accessToken":"..."}`, 不是裸字符串
+     * (对应后端 `UserController.login` 的 `.Data(mapOf("accessToken" to tocken.id))`)。
+     * 取 token 用 `resp.data?.accessToken`。
+     *
+     * @param model 设备标识, 后端仅作记录; 传 `legado-android` 便于在后台区分设备。
      */
     suspend fun login(
         serverUrl: String,
         username: String,
         password: String,
-        model: String = "legado-ios",
-    ): QReadResponse<String> = request {
+        model: String = "legado-android",
+    ): QReadResponse<QReadLoginResult> = request {
         client.newCallStrResponse {
             url("${apiBase(serverUrl)}/login")
             postForm(
@@ -89,13 +122,72 @@ object QReadApi {
     // 书源
     // ---------------------------------------------------------------------
 
-    /** 拉取后端全部书源。 */
-    suspend fun getBookSources(
+    /**
+     * 书源分页准备 —— **必须先调**, 否则 [getBookSourcesNew] 只会返回空。
+     *
+     * 返回 `{page, md5}`; `md5` 是本次书源快照标识 (后端 `sourcemd5 + source`)。
+     */
+    suspend fun getBookSourcesPage(
         serverUrl: String,
         accessToken: String,
-    ): QReadResponse<List<QReadBookSource>> = request {
+    ): QReadResponse<QReadPageInfo> = request {
         client.newCallStrResponse {
-            get("${apiBase(serverUrl)}/getBookSourcesNew", mapOf("accessToken" to accessToken))
+            get("${apiBase(serverUrl)}/getBookSourcesPage", mapOf("accessToken" to accessToken))
+        }.body
+    }
+
+    /**
+     * 取书源列表某一页 (页码从 1 开始)。须先用 [getBookSourcesPage] 拿到 md5。
+     *
+     * 注意返回的是**精简投影** (见 [QReadSourceBrief]), 只用来取 `bookSourceUrl`,
+     * 不要拿它直接建 legado 的 `BookSource`。
+     */
+    suspend fun getBookSourcesNew(
+        serverUrl: String,
+        accessToken: String,
+        md5: String,
+        page: Int,
+    ): QReadResponse<List<QReadSourceBrief>> = request {
+        client.newCallStrResponse {
+            get(
+                "${apiBase(serverUrl)}/getBookSourcesNew",
+                mapOf(
+                    "accessToken" to accessToken,
+                    "md5" to md5,
+                    "page" to page.toString(),
+                )
+            )
+        }.body
+    }
+
+    /**
+     * 批量导出**完整**书源 JSON。
+     *
+     * 这是拿书源的**唯一正确接口**: 后端 `SourceController.getbookSourcejson`
+     * 把每个 `bookSource.json` 拼成一个 JSON 数组**字符串**返回。
+     *
+     * @param urls 书源 URL 列表 (后端 `@Body ids` 的形参名叫 ids, 但底层 SQL 是
+     *   `WHERE book_source_url = #{bookSourceUrl}`, 所以传的是 **bookSourceUrl**)。
+     *   单次不宜过多 —— 后端不做分片, 数组多大就拼多大, 调用方自行分批。
+     * @return `data` 是**字符串**, 内容形如 `[ {完整书源}, {完整书源} ]`。
+     *   交给 `GSON.fromJsonArray<BookSource>(...)` 直接解析即可 —— 后端存的
+     *   就是 legado 格式的 `bookSource.json`, 字段与 legado 实体一一对应
+     *   (含 `ruleSearch`/`ruleToc`/`ruleContent`/`header`/`jsLib` 等), **无需映射**。
+     */
+    suspend fun getBookSourceJson(
+        serverUrl: String,
+        accessToken: String,
+        urls: List<String>,
+    ): QReadResponse<String> = request {
+        client.newCallStrResponse {
+            // 先用 get() 把 URL + query 建好 (它会正确编码参数), 再用 postJson() 覆盖
+            // 请求方法与 body —— OkHttp 的 Request.Builder 后调者生效, 最终是 POST + JSON body。
+            get(
+                "${apiBase(serverUrl)}/getbookSourcejson",
+                mapOf("accessToken" to accessToken)
+            )
+            // 后端 @Body 收 JSON 数组, 必须是 application/json
+            postJson(GSON.toJson(urls))
         }.body
     }
 
@@ -104,15 +196,14 @@ object QReadApi {
     // ---------------------------------------------------------------------
 
     /**
-     * 书架分页准备: 返回总页数 [QReadShelfPage.page] 与快照标识 [QReadShelfPage.md5]。
+     * 书架分页准备: 返回总页数与快照标识。
      *
-     * 必须**先**调本接口再调 [getBookshelf] —— 后端在这次调用里把每页数据写进缓存,
-     * 缓存 key 含 md5; 直接调 [getBookshelf] 会拿到空结果。
+     * 必须**先**调本接口再调 [getBookshelf], 理由见类注释。
      */
     suspend fun getBookshelfPage(
         serverUrl: String,
         accessToken: String,
-    ): QReadResponse<QReadShelfPage> = request {
+    ): QReadResponse<QReadPageInfo> = request {
         client.newCallStrResponse {
             get("${apiBase(serverUrl)}/getBookshelfPage", mapOf("accessToken" to accessToken))
         }.body
@@ -158,11 +249,13 @@ object QReadApi {
     /**
      * 上传阅读进度。
      *
-     * 后端按「书名+作者」在**服务端书架**里找同书; 找不到会静默忽略 (仍返回 success),
+     * 后端按 `url` 在**服务端书架**里找同书; 找不到会静默忽略 (仍返回 success),
      * 所以只存在于 legado 本地、后端没有的书, 进度不会同步。
      *
      * @param index 章节序号
-     * @param pos   章节内位置; 后端是 Double, legado 的 Int 偏移可直接传
+     * @param pos   **章节内比例 (0.0 ~ 1.0)**, 不是字符偏移 —— 见
+     *   [QReadBook.durChapterPos]。后端只存不解释, 但传超过 2 的值会被
+     *   `getBookshelfPage` 钳成 0 (等于丢进度), 所以调用方必须换算好再传。
      * @param isnew `"1"` 表示新书 (后端额外记一条 sgread), 否则传 null
      */
     suspend fun saveBookProgress(
@@ -170,10 +263,10 @@ object QReadApi {
         accessToken: String,
         bookUrl: String,
         index: Int,
-        pos: Int,
+        pos: Double,
         title: String?,
         isnew: String? = null,
-    ): QReadResponse<JsonElement> {
+    ): QReadResponse<String> {
         val query = mutableMapOf(
             "url" to bookUrl,
             "index" to index.toString(),
@@ -184,7 +277,7 @@ object QReadApi {
         return requestJson("/saveBookProgress", serverUrl, accessToken, query)
     }
 
-    /** 拉取某本书的已读章节 (逗号分隔的章节序号)。 */
+    /** 拉取某本书的已读章节 (逗号分隔的章节序号)。书不存在时返回 `isSuccess=false`。 */
     suspend fun getBookRead(
         serverUrl: String,
         accessToken: String,
@@ -202,6 +295,8 @@ object QReadApi {
      * 后端 `ItemController` 提供按用户维度的 **name → value 字符串** 存储, 轻阅读自己
      * 就用它放搜索记录、阅读设置等。legado 侧把记录序列化成 JSON 整体塞进一个 key 即可,
      * 不必让后端加表。
+     *
+     * **key 不存在时 `data` 字段整个缺失** (不是 null), 所以返回类型必须可空。
      */
     suspend fun getItem(
         serverUrl: String,

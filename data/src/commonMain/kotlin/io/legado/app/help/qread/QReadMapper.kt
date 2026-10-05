@@ -2,7 +2,6 @@ package io.legado.app.help.qread
 
 import io.legado.app.constant.BookType
 import io.legado.app.data.entities.Book
-import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Bookmark
 import io.legado.app.data.entities.SearchKeyword
 import io.legado.app.utils.systemCurrentTimeMillis
@@ -12,62 +11,62 @@ import kotlinx.serialization.Serializable
  * 轻阅读后端模型 → legado 实体 的转换层。
  *
  * # 为什么需要转换
- * 两边模型同源 (轻阅读 fork 了 legado 的规则引擎), 绝大多数字段名一致, 但有三处
- * **类型/语义不同**, 直接反射拷贝会出错, 必须显式转换:
+ * 两边模型同源 (轻阅读 fork 了 legado 的规则引擎), 字段名几乎一一对应, 但有 **2 处
+ * 类型/语义不同**, 直接反射拷贝会出错, 必须显式转换:
  *
  * | 字段 | 轻阅读后端 | legado | 处理 |
  * |---|---|---|---|
- * | 书源 `ruleXxx` | 结构化对象 | JSON **字符串** | [JsonObject.toString] 原样转 |
- * | 书架 `durChapterPos` | `Double` (章节内比例) | `Int` (正文字符偏移) | 归零, 见下 |
- * | 书架 `bookgroup` | 分组**名称** | `Book.group: Long` (分组 id) | 按名称查 id |
+ * | 书架 `durChapterPos` | `Double` **章节内比例 0.0~1.0** | `Int` **正文字符偏移** | 归零, 见下 |
+ * | 书架 `type` | `Int` **单值索引** 0 文本 / 1 音频 / 2 图片 | `Int` **`BookType` 位掩码** | [bookTypeOf] |
  *
- * # 关于 durChapterPos 的有损转换 (重要)
- * 后端 `BookshelfController.getBookshelfPage` 会把 `durChapterPos` 钳到 `0.0..2.0`,
- * 说明它是**章节内比例**, 而 legado 的 `durChapterPos` 是**正文字符索引**。
- * 两者换算需要正文长度, 同步阶段拿不到, 因此这里**只能丢弃** (置 0), 即:
- * 进度同步的粒度是「读到第几章」, 不是「第几章第几行」。
- * 这与官方 qreadwebdav 桥接插件的限制一致。若要精确到行, 需要 Phase 3 在
- * 拉取正文后按比例回算, 或改用 legado 侧 `variable` 存比例。
+ * 另有一处**不是类型差异而是关联键差异**: 书架 `bookgroup` 是分组**名称**,
+ * 而 legado 的 `Book.group` 是本地分组 **id**, 需要调用方先建映射。
+ *
+ * # 书源不需要转换 (重要)
+ * 书源走 [QReadApi.getBookSourceJson], 后端直接返回 legado 格式的 `bookSource.json`
+ * 数组字符串, 用 `GSON.fromJsonArray<BookSource>(...)` 即可。**不要逐字段手写映射** ——
+ * 后端书源有 25+ 个字段 (`header` / `jsLib` / `concurrentRate` / `enabledCookieJar` /
+ * `loginUi` / `exploreUrl` ...), 手写映射必漏, 漏掉 `header`/`jsLib` 会让整批书源不可用。
+ *
+ * # 关于 durChapterPos 的有损转换 (已实测确认)
+ * 后端 `BookshelfController.getBookshelfPage` 把 `durChapterPos` 钳到 `0.0..2.0`,
+ * 线上数据全是干净分数 (1/9=0.1111、1/4=0.25、13/16=0.8125 ...), 且后端**只存不解释**
+ * (实测写入 0.5 后读回就是 0.5) —— 所以它确实是**章节内比例**, 官方客户端发的也是比例。
+ *
+ * 而 legado 的 `durChapterPos` 是**正文字符索引**。两者换算需要正文长度, 同步阶段拿不到,
+ * 因此**下载方向只能丢弃** (置 0), 即: 进度同步的粒度是「读到第几章」, 不是「第几章第几行」。
+ *
+ * 上传方向同理: legado 的字符偏移若直接当 `pos` 传上去, 超过 2 会被后端钳成 0 (等于丢进度),
+ * 所以 [QReadSync.uploadBookProgress] 必须先按正文长度换算成比例, 见那里的说明。
  */
 object QReadMapper {
 
     /**
-     * 书源转换。
+     * 后端书籍类型索引 → legado `BookType` 位掩码。
      *
-     * `ruleXxx` 直接把后端的 JSON 对象序列化成字符串塞给 legado —— legado 实体上的
-     * `RawJsonStringSerializer` 正是为「rule 可能是对象也可能是字符串」设计的,
-     * 所以不必为 5 种规则各建一套 Kotlin 模型, 后端加规则字段也不会漏。
+     * 后端 `Booklist.type` 的 setter 会把写入值归一化成 **0/1/2**
+     * (`32,1 -> 1`、`64,2 -> 2`、其余 -> `0`), 而 legado 的 `Book.type` 是位掩码
+     * (`text = 8`、`audio = 32`、`image = 64`)。
+     *
+     * **直接把 0/1/2 赋给 `Book.type` 会出问题**: `type = 0` 会让
+     * `Book.isOnLineTxt` (= `!isLocal && isType(BookType.text)`) 判为 false,
+     * 书会被当成「没有类型」, 后续按类型分流的逻辑 (阅读/听书/看图) 全部走偏。
+     *
+     * `else` 分支兜底: 若某个值本身就是合法的 `BookType` 位掩码 (早期版本可能直接存
+     * legado 的值), 原样保留; 否则退回 `text`。
      */
-    fun toLegadoBookSource(src: QReadBookSource): BookSource = BookSource(
-        bookSourceUrl = src.bookSourceUrl,
-        bookSourceName = src.bookSourceName,
-        bookSourceGroup = src.bookSourceGroup,
-        bookSourceType = src.bookSourceType,
-        bookUrlPattern = src.bookUrlPattern,
-        customOrder = src.customOrder,
-        enabled = src.enabled,
-        enabledExplore = src.enabledExplore,
-        loginCheckJs = src.loginCheckJs,
-        coverDecodeJs = src.coverDecodeJs,
-        bookSourceComment = src.bookSourceComment,
-        variableComment = src.variableComment,
-        lastUpdateTime = src.lastUpdateTime,
-        respondTime = src.respondTime,
-        weight = src.weight,
-        exploreUrl = src.exploreUrl,
-        searchUrl = src.searchUrl,
-        ruleExplore = src.ruleExplore?.toString(),
-        ruleSearch = src.ruleSearch?.toString(),
-        ruleBookInfo = src.ruleBookInfo?.toString(),
-        ruleToc = src.ruleToc?.toString(),
-        ruleContent = src.ruleContent?.toString(),
-    )
+    fun bookTypeOf(remoteType: Int?): Int = when (remoteType) {
+        null, 0 -> BookType.text
+        1, BookType.audio -> BookType.audio
+        2, BookType.image -> BookType.image
+        else -> remoteType.takeIf { it and BookType.allBookType != 0 } ?: BookType.text
+    }
 
     /**
      * 书籍转换。
      *
      * @param groupId 已解析好的本地分组 id; 调用方需先用
-     *   [QReadSync.resolveGroupIds] 把后端分组名映射成本地 id, 解析不到传 0 (未分组)。
+     *   [QReadSync.resolveGroupIdsLocked] 把后端分组名映射成本地 id, 解析不到传 0 (未分组)。
      */
     fun toLegadoBook(src: QReadBook, groupId: Long): Book {
         val url = src.bookUrl.orEmpty()
@@ -88,7 +87,8 @@ object QReadMapper {
             intro = src.intro,
             customIntro = src.customIntro,
             charset = src.charset,
-            type = src.type ?: BookType.text,
+            // 后端是单值索引, legado 是位掩码 —— 必须转换, 见 bookTypeOf 的说明。
+            type = bookTypeOf(src.type),
             group = groupId,
             latestChapterTitle = src.latestChapterTitle,
             latestChapterTime = src.latestChapterTime ?: 0L,

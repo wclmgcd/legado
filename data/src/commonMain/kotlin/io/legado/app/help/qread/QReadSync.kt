@@ -4,6 +4,7 @@ import io.legado.app.constant.AppLog
 import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
+import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Server
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
@@ -11,6 +12,7 @@ import io.legado.app.utils.systemCurrentTimeMillis
 import io.legado.app.utils.toJson
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -44,6 +46,10 @@ object QReadSession {
      * 登录指定后端。成功后 [isConnected] 为 true。
      *
      * 用 [Result] 而不是抛异常: 调用方多在设置界面/启动流程, 需要把失败原因展示给用户。
+     *
+     * 注意后端 `/login` 的 `data` 是**对象** `{"accessToken":"..."}`, 取字段要用
+     * `resp.data?.accessToken` —— 直接把它当字符串反序列化会抛
+     * `Unexpected JSON token ... Expected beginning of the string, but got {`。
      */
     suspend fun login(server: Server): Result<Unit> {
         val cfg = server.getQReadConfig()
@@ -52,7 +58,7 @@ object QReadSession {
             return Result.failure(IllegalStateException("后端地址为空"))
         }
         val resp = QReadApi.login(cfg.url, cfg.username, cfg.password)
-        val newToken = resp.data
+        val newToken = resp.data?.accessToken
         if (!resp.isSuccess || newToken.isNullOrBlank()) {
             return Result.failure(
                 IllegalStateException(resp.errorMsg.ifBlank { "登录失败，请检查账号密码与后端版本" })
@@ -121,6 +127,15 @@ object QReadSync {
     /** 阅读记录在后端 KV 里的 key。 */
     private const val KV_READ_RECORD = "legado.readRecord"
 
+    /**
+     * 书源批量导出的分批大小。
+     *
+     * 后端 `getbookSourcejson` 是把数组里每个源的 json **直接拼成一个字符串**返回,
+     * 没有分页也没有大小保护 —— 一次传 150 个会得到几 MB 的响应。分批更稳, 也便于
+     * 单批失败时只丢一批而不是全部。
+     */
+    private const val SOURCE_EXPORT_BATCH = 30
+
     /** 一轮同步的结果, 供 UI 提示。 */
     data class Result(
         val sourceCount: Int = 0,
@@ -167,7 +182,27 @@ object QReadSync {
     // ---------------------------------------------------------------------
 
     /**
-     * 书源同步: 后端全量书源按 [BookSource.bookSourceUrl] 覆盖本地同名书源。
+     * 书源同步 —— **三步协议**, 少一步都拿不到数据。
+     *
+     * ```
+     * 1) GET  /getBookSourcesPage            -> {page, md5}   (后端顺带把每页写进缓存)
+     * 2) GET  /getBookSourcesNew?md5&page=N  -> [精简投影...]  (只取 bookSourceUrl)
+     * 3) POST /getbookSourcejson  body=[url] -> "[完整书源 JSON 数组]"  (字符串)
+     * ```
+     *
+     * # 为什么不能只用第 2 步
+     * `/getBookSourcesNew` 返回的是**精简投影**, 每条只有 9 个字段
+     * (`checkKeyWord` / `variableComment` / `bookSourceGroup` / `loginUrl` / `loginUi` /
+     * `bookSourceName` / `bookSourceUrl` / `enabledExplore` / `enabled`) ——
+     * **没有 `ruleSearch` / `ruleToc` / `ruleContent` / `ruleBookInfo` / `ruleExplore` /
+     * `searchUrl` / `exploreUrl` / `header` / `jsLib`**。直接拿它建 `BookSource`
+     * 会得到一堆「有名字没规则」的废源, 搜索、目录、正文全部不可用。
+     *
+     * # 为什么第 3 步不需要字段映射
+     * 后端存的就是 legado 格式的 `bookSource.json` (轻阅读 fork 了 legado 的规则引擎),
+     * 25+ 个字段与 legado 的 `BookSource` 实体一一对应, 连 `ruleSearch` 这种
+     * 「JSON 对象 vs 字符串」的差异也由实体上的 `RawJsonStringSerializer` 处理掉了。
+     * 所以直接 `GSON.fromJsonArray<BookSource>` 即可, **手写字段映射必漏字段**。
      *
      * 以**后端为准** (而不是合并): 轻阅读的书源由服务端统一维护, 本地改动会在下次
      * 同步被覆盖, 这是预期行为 —— 想保留本地改动就不要用后端书源同步。
@@ -176,17 +211,71 @@ object QReadSync {
         val url = QReadSession.serverUrl ?: return 0
         val token = QReadSession.accessToken ?: return 0
 
-        val resp = QReadApi.getBookSources(url, token)
-        if (!resp.isSuccess) {
-            AppLog.put("轻阅读书源同步失败: ${resp.errorMsg}")
+        // ---- 第 1 步: 分页准备 ----
+        val pageResp = QReadApi.getBookSourcesPage(url, token)
+        if (!pageResp.isSuccess) {
+            AppLog.put("轻阅读书源准备失败: ${pageResp.errorMsg}")
             return 0
         }
-        val sources = resp.data.orEmpty().filter { it.bookSourceUrl.isNotBlank() }
-        if (sources.isEmpty()) return 0
+        val md5 = pageResp.data?.md5.orEmpty()
+        if (md5.isBlank()) {
+            AppLog.put("轻阅读书源 md5 为空，跳过")
+            return 0
+        }
+        val totalPages = (pageResp.data?.page ?: 1).coerceAtLeast(1)
 
-        val mapped = sources.map { QReadMapper.toLegadoBookSource(it) }
-        AppDbProviders.get().bookSourceDao.insert(*mapped.toTypedArray())
-        return mapped.size
+        // ---- 第 2 步: 逐页取 URL ----
+        // 用 LinkedHashSet 去重: 后端列表里同一站点出现多次是正常的 (http/https 前缀不同、
+        // 同一书源被分组多次导入等), 重复传会让第 3 步的响应白白翻倍。
+        val urls = linkedSetOf<String>()
+        for (page in 1..totalPages) {
+            val resp = QReadApi.getBookSourcesNew(url, token, md5, page)
+            if (!resp.isSuccess) {
+                AppLog.put("轻阅读书源第 $page 页失败: ${resp.errorMsg}")
+                continue
+            }
+            resp.data.orEmpty().forEach { brief ->
+                brief.bookSourceUrl.takeIf { it.isNotBlank() }?.let { urls.add(it) }
+            }
+        }
+        if (urls.isEmpty()) return 0
+
+        // ---- 第 3 步: 分批导出完整 JSON 并落库 ----
+        val dao = AppDbProviders.get().bookSourceDao
+        var written = 0
+        var skipped = 0
+        urls.chunked(SOURCE_EXPORT_BATCH).forEach { batch ->
+            val resp = QReadApi.getBookSourceJson(url, token, batch)
+            if (!resp.isSuccess) {
+                AppLog.put("轻阅读书源导出失败(${batch.size} 个): ${resp.errorMsg}")
+                return@forEach
+            }
+            val jsonArray = resp.data
+            if (jsonArray.isNullOrBlank()) return@forEach
+
+            // 逐条解析, 不用 `GSON.fromJsonArray<BookSource>` —— 后者是「整批一起解」,
+            // 132 个真实书源里只要有一个字段畸形, 整批 30 个全丢。
+            // 逐条解析能保住其余, 并把坏的那条记进日志。
+            val array = runCatching { GSON.parseToJsonElement(jsonArray) }
+                .getOrNull() as? JsonArray
+            if (array == null) {
+                AppLog.put("轻阅读书源 JSON 不是数组, 跳过本批(${batch.size} 个)")
+                return@forEach
+            }
+            val valid = array.mapNotNull { element ->
+                runCatching { GSON.decodeFromJsonElement<BookSource>(element) }
+                    .onFailure { skipped++ }
+                    .getOrNull()
+                    ?.takeIf { it.bookSourceUrl.isNotBlank() }
+            }
+            if (valid.isEmpty()) return@forEach
+            dao.insert(*valid.toTypedArray())
+            written += valid.size
+        }
+        if (skipped > 0) {
+            AppLog.put("轻阅读书源同步: 有 $skipped 个源解析失败已跳过, 成功写入 $written 个")
+        }
+        return written
     }
 
     /**
@@ -335,14 +424,37 @@ object QReadSync {
     // ---------------------------------------------------------------------
 
     /**
+     * 把 legado 的字符偏移换算成后端要的**章节内比例** (0.0 ~ 1.0)。
+     *
+     * 后端 `durChapterPos` 是比例 (实测: 线上数据全是 1/9、1/4、13/16 这类干净分数,
+     * 写入什么读回什么, 且 `getBookshelfPage` 会把 `> 2` 的值钳成 0)。
+     * legado 存的是**正文字符偏移**, 不换算直接传 (比如 1500) 会被后端钳成 0, 等于丢进度。
+     *
+     * 换算需要正文长度, 拿不到时返回 0.0 —— 宁可只同步到「第几章」, 也不要把
+     * 一个会被后端判为非法的值写上去。
+     */
+    private fun toChapterRatio(charOffset: Int, chapterLength: Int?): Double {
+        val len = chapterLength ?: return 0.0
+        if (len <= 0) return 0.0
+        return (charOffset.toDouble() / len).coerceIn(0.0, 1.0)
+    }
+
+    /**
      * 上传单本书的阅读进度。
      *
-     * 后端按「书名+作者」在服务端书架里匹配, 匹配不到会静默忽略 (仍返回 success),
+     * 后端按 `url` 在服务端书架里匹配, 匹配不到会静默忽略 (仍返回 success),
      * 所以本地独有、后端没有的书上传进度不会报错, 也不会生效。
      *
      * @param isNew 新加入书架的书传 `"1"`, 后端会额外记一条记录
+     * @param chapterLength 当前章节的**正文字符数**, 用来把 legado 的字符偏移换算成
+     *   后端要的章节内比例。传 null 表示拿不到 (如批量上传), 此时只同步章节号,
+     *   章内进度按 0 处理。**接线点**: 阅读器保存进度时把当前章节文本长度传进来。
      */
-    suspend fun uploadBookProgress(book: Book, isNew: Boolean = false) {
+    suspend fun uploadBookProgress(
+        book: Book,
+        isNew: Boolean = false,
+        chapterLength: Int? = null,
+    ) {
         val url = QReadSession.serverUrl ?: return
         val token = QReadSession.accessToken ?: return
         val resp = QReadApi.saveBookProgress(
@@ -350,7 +462,7 @@ object QReadSync {
             accessToken = token,
             bookUrl = book.bookUrl,
             index = book.durChapterIndex,
-            pos = book.durChapterPos,
+            pos = toChapterRatio(book.durChapterPos, chapterLength),
             title = book.durChapterTitle,
             isnew = if (isNew) "1" else null,
         )
@@ -359,7 +471,12 @@ object QReadSync {
         }
     }
 
-    /** 把本地全部书籍的进度推给后端 (手动「上传进度」用)。 */
+    /**
+     * 把本地全部书籍的进度推给后端 (手动「上传进度」用)。
+     *
+     * 批量场景拿不到每本书当前章节的正文长度, 所以章内进度一律按 0 上传 ——
+     * 只同步「读到第几章」。要精确到章内位置, 走 [uploadBookProgress] 并传 chapterLength。
+     */
     suspend fun uploadAllProgress(): Int = mutex.withLock {
         if (!QReadSession.isConnected) return@withLock 0
         var count = 0
@@ -371,7 +488,7 @@ object QReadSync {
                 accessToken = token,
                 bookUrl = book.bookUrl,
                 index = book.durChapterIndex,
-                pos = book.durChapterPos,
+                pos = 0.0,
                 title = book.durChapterTitle,
             )
             if (resp.isSuccess) count++
