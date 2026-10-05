@@ -24,7 +24,8 @@ import kotlinx.serialization.Serializable
  *
  * # 书源不需要转换 (重要)
  * 书源走 [QReadApi.getBookSourceJson], 后端直接返回 legado 格式的 `bookSource.json`
- * 数组字符串, 用 `GSON.fromJsonArray<BookSource>(...)` 即可。**不要逐字段手写映射** ——
+ * 数组字符串, 用 `GSON.parseToJsonElement(...)` 拆数组后**逐条**
+ * `GSON.fromJsonObject<BookSource>(...)` 即可。**不要逐字段手写映射** ——
  * 后端书源有 25+ 个字段 (`header` / `jsLib` / `concurrentRate` / `enabledCookieJar` /
  * `loginUi` / `exploreUrl` ...), 手写映射必漏, 漏掉 `header`/`jsLib` 会让整批书源不可用。
  *

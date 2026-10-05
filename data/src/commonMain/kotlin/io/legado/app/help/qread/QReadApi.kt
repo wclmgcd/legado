@@ -170,9 +170,11 @@ object QReadApi {
      *   `WHERE book_source_url = #{bookSourceUrl}`, 所以传的是 **bookSourceUrl**)。
      *   单次不宜过多 —— 后端不做分片, 数组多大就拼多大, 调用方自行分批。
      * @return `data` 是**字符串**, 内容形如 `[ {完整书源}, {完整书源} ]`。
-     *   交给 `GSON.fromJsonArray<BookSource>(...)` 直接解析即可 —— 后端存的
-     *   就是 legado 格式的 `bookSource.json`, 字段与 legado 实体一一对应
+     *   交给 `GSON.parseToJsonElement(...)` 拆成数组后**逐条**
+     *   `GSON.fromJsonObject<BookSource>(...)` 解析即可 —— 后端存的就是 legado
+     *   格式的 `bookSource.json`, 字段与 legado 实体一一对应
      *   (含 `ruleSearch`/`ruleToc`/`ruleContent`/`header`/`jsLib` 等), **无需映射**。
+     *   不要用 `fromJsonArray<BookSource>` 整批解析: 一条畸形会让整批全丢。
      */
     suspend fun getBookSourceJson(
         serverUrl: String,
@@ -257,6 +259,10 @@ object QReadApi {
      *   [QReadBook.durChapterPos]。后端只存不解释, 但传超过 2 的值会被
      *   `getBookshelfPage` 钳成 0 (等于丢进度), 所以调用方必须换算好再传。
      * @param isnew `"1"` 表示新书 (后端额外记一条 sgread), 否则传 null
+     *
+     * 返回的 `data` 实测是**字符串** (逗号分隔的已读章节), 但这里统一用
+     * `JsonElement` 接住 —— 与 [requestJson] 的其它调用点保持一致, 调用方只看
+     * `isSuccess` / `errorMsg`, 不解析 `data`。
      */
     suspend fun saveBookProgress(
         serverUrl: String,
@@ -266,7 +272,7 @@ object QReadApi {
         pos: Double,
         title: String?,
         isnew: String? = null,
-    ): QReadResponse<String> {
+    ): QReadResponse<JsonElement> {
         val query = mutableMapOf(
             "url" to bookUrl,
             "index" to index.toString(),

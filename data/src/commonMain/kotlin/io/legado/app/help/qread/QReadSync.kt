@@ -202,7 +202,8 @@ object QReadSync {
      * 后端存的就是 legado 格式的 `bookSource.json` (轻阅读 fork 了 legado 的规则引擎),
      * 25+ 个字段与 legado 的 `BookSource` 实体一一对应, 连 `ruleSearch` 这种
      * 「JSON 对象 vs 字符串」的差异也由实体上的 `RawJsonStringSerializer` 处理掉了。
-     * 所以直接 `GSON.fromJsonArray<BookSource>` 即可, **手写字段映射必漏字段**。
+     * 所以拆成数组后**逐条** `GSON.fromJsonObject<BookSource>(...)` 即可,
+     * **手写字段映射必漏字段**。
      *
      * 以**后端为准** (而不是合并): 轻阅读的书源由服务端统一维护, 本地改动会在下次
      * 同步被覆盖, 这是预期行为 —— 想保留本地改动就不要用后端书源同步。
@@ -263,7 +264,12 @@ object QReadSync {
                 return@forEach
             }
             val valid = array.mapNotNull { element ->
-                runCatching { GSON.decodeFromJsonElement<BookSource>(element) }
+                // 用 GSON.fromJsonObject 而不是 kotlinx 的 Json.decodeFromJsonElement:
+                // 后者是 kotlinx 的顶层扩展函数, 不显式 import 时编译器会匹配到需要传
+                // DeserializationStrategy 的成员重载而报「Cannot infer type for value
+                // parameter 'T'」。fromJsonObject 内部走 Json.decodeFromString (成员函数),
+                // 全仓已验证可编译; 返回 Result, 坏的那条只记日志不影响其余。
+                GSON.fromJsonObject<BookSource>(element.toString())
                     .onFailure { skipped++ }
                     .getOrNull()
                     ?.takeIf { it.bookSourceUrl.isNotBlank() }
