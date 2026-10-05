@@ -93,11 +93,11 @@ import legado.ui.generated.resources.explore_style
 import legado.ui.generated.resources.fixed_width_mode
 import legado.ui.generated.resources.grid_width_dp
 import legado.ui.generated.resources.group_style
-import legado.ui.generated.resources.home
 import legado.ui.generated.resources.ic_arrow_drop_down
 import legado.ui.generated.resources.my
 import legado.ui.generated.resources.ok
 import legado.ui.generated.resources.reset
+import legado.ui.generated.resources.rss
 import legado.ui.generated.resources.show_last_update_time
 import legado.ui.generated.resources.show_unread
 import legado.ui.generated.resources.sort
@@ -585,9 +585,10 @@ class BottomNavConfigController {
     private val prefs = PreferenceProviders.get()
     private val appConfig = io.legado.app.help.config.AppConfigProviders.get()
     private val defaults = listOf(
-        BottomNavConfigItem(BottomNavTag.HOME, appConfig.showHome),
+        // 2026-10: 主页换回订阅。订阅 tab 恒显 (无开关), 故 enabled 直接 true。
         BottomNavConfigItem(BottomNavTag.BOOKSHELF, true),
         BottomNavConfigItem(BottomNavTag.DISCOVERY, appConfig.showDiscovery),
+        BottomNavConfigItem(BottomNavTag.RSS, true),
         BottomNavConfigItem(BottomNavTag.MY, true),
     )
 
@@ -628,16 +629,14 @@ class BottomNavConfigController {
     }
 
     fun save(): Boolean {
-        val showHome = items.find { it.tag == BottomNavTag.HOME }?.enabled ?: true
+        // 订阅 tab 恒显, 不再有 showHome 开关 (旧 PreferKey.showHome 保留但不再写入/读取)
         val showDiscovery = items.find { it.tag == BottomNavTag.DISCOVERY }?.enabled ?: true
         val order = items.joinToString(",") { it.tag }
-        val changed = appConfig.showHome != showHome ||
-            appConfig.showDiscovery != showDiscovery ||
+        val changed = appConfig.showDiscovery != showDiscovery ||
             appConfig.bottomNavItemOrder != order ||
             appConfig.bottomBarHeight != height.intValue ||
             appConfig.bottomBarIconSize != iconSize.intValue ||
             appConfig.bottomBarLabelMode != labelMode.intValue
-        prefs.putBoolean(PreferKey.showHome, showHome)
         prefs.putBoolean(PreferKey.showDiscovery, showDiscovery)
         prefs.putString(PreferKey.bottomNavItemOrder, order)
         if (appConfig.bottomBarHeight != height.intValue) {
@@ -662,17 +661,17 @@ data class BottomNavConfigItem(
 }
 
 private fun bottomNavNameRes(tag: String) = when (tag) {
-    BottomNavTag.HOME -> Res.string.home
     BottomNavTag.BOOKSHELF -> Res.string.bookshelf
     BottomNavTag.DISCOVERY -> Res.string.discovery
+    BottomNavTag.RSS -> Res.string.rss
     else -> Res.string.my
 }
 
 /** 对照 MainNavItem.iconKey: 启用取实心, 禁用取空心 */
 private fun bottomNavIconKey(tag: String, enabled: Boolean): String = when (tag) {
-    BottomNavTag.HOME -> if (enabled) "ic_bottom_home_s" else "ic_bottom_home_e"
     BottomNavTag.BOOKSHELF -> if (enabled) "ic_bottom_books_s" else "ic_bottom_books_e"
     BottomNavTag.DISCOVERY -> if (enabled) "ic_bottom_explore_s" else "ic_bottom_explore_e"
+    BottomNavTag.RSS -> if (enabled) "ic_bottom_rss_s" else "ic_bottom_rss_e"
     else -> if (enabled) "ic_bottom_person_s" else "ic_bottom_person_e"
 }
 

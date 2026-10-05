@@ -327,8 +327,14 @@ sealed interface VideoPlayTarget {
     }
 }
 
+/**
+ * 主界面 tab。与 [io.legado.app.constant.BottomNavTag] 一一对应。
+ *
+ * 2026-10 按用户要求去掉「主页」(HOME), 换回原版的「订阅」(RSS):
+ * 底部四栏 = 书架 / 发现 / 订阅 / 我的。主页相关的 HomeScreen 已不在导航中引用。
+ */
 @Serializable
-enum class MainTab { HOME, BOOKSHELF, DISCOVERY, MY }
+enum class MainTab { BOOKSHELF, DISCOVERY, RSS, MY }
 
 /**
  * 路由只持有可序列化业务快照，不持有 Activity、UIViewController 或平台文件句柄。

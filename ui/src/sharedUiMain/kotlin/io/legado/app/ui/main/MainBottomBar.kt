@@ -25,19 +25,19 @@ package io.legado.app.ui.main
  * # ResourceProvider key 需求清单
  *
  * ## Painter (drawable, 新增)
- * - `ic_bottom_home_s`     主页选中(实心)
- * - `ic_bottom_home_e`     主页未选(空心)
  * - `ic_bottom_books_s`    书架选中(实心)
  * - `ic_bottom_books_e`    书架未选(空心)
  * - `ic_bottom_explore_s`  发现选中(实心)
  * - `ic_bottom_explore_e`  发现未选(空心)
+ * - `ic_bottom_rss_s`      订阅选中(实心)   (2026-10 替换原 ic_bottom_home_*)
+ * - `ic_bottom_rss_e`      订阅未选(空心)
  * - `ic_bottom_person_s`   我的选中(实心)
  * - `ic_bottom_person_e`   我的未选(空心)
  *
  * ## String (strings.xml, 新增)
- * - `home`                 主页 (R.string.home)
  * - `bookshelf`            书架 (R.string.bookshelf, 已在 BookshelfComposablesShared 列出, 复用)
  * - `discovery`            发现 (R.string.discovery)
+ * - `rss`                  订阅 (R.string.rss)   (2026-10 替换原 home)
  * - `my`                   我的 (R.string.my)
  *
  * ## Color (colors.xml, 新增)

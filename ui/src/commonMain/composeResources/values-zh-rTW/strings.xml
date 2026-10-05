@@ -892,6 +892,7 @@
     <string name="explore_cols">欄數</string>
     <string name="search_layout">搜索佈局</string>
     <string name="home">首頁</string>
+    <string name="rss">訂閱</string>
     <string name="home_add_section">新增組件</string>
     <string name="home_edit_section">編輯組件</string>
     <string name="home_section_title">組件標題</string>

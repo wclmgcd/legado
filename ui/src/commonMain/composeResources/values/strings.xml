@@ -478,6 +478,7 @@
     <string name="explore_style">Style</string>
     <string name="explore_style_video">Video</string>
     <string name="home">Home</string>
+    <string name="rss">RSS</string>
     <string name="home_manage">Manage sections</string>
     <string name="home_more">More</string>
     <string name="home_tab_empty">No sections in this group, tap + in upper right to add</string>
@@ -1327,7 +1328,7 @@
         <item>en</item>
     </string-array>
     <string-array name="default_home_page_value">
-        <item>home</item>
+        <item>rss</item>
         <item>bookshelf</item>
         <item>explore</item>
         <item>my</item>
@@ -1478,7 +1479,7 @@
         <item>Indent with 4 chars</item>
     </string-array>
     <string-array name="default_home_page">
-        <item>Home</item>
+        <item>RSS</item>
         <item>Bookshelf</item>
         <item>Discovery</item>
         <item>Me</item>

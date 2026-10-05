@@ -21,9 +21,12 @@ package io.legado.app.ui.main
  * - **下沉部分**: HorizontalPager 装配 + 翻页流收集 + currentPage 回写 + MainBottomBar 调用
  *   这部分是纯 Compose 通用逻辑, 不依赖 Android 专属 API
  * - **保留 app 端**: 4 个 Tab Composable 实例通过 `@Composable () -> Unit` lambda 参数注入,
- *   app 端 MainActivity.Content() 在 lambda 内调用 `HomeTab()` / `BookshelfTab(...)`
- *   / `ExploreTab(...)` / `MyTab()`, 内部的 controller 回传/style 读取/Activity 跳转
- *   全部封在 lambda 内, shared 端 MainScreen 无需感知
+ *   app 端 MainActivity.Content() 在 lambda 内调用 `BookshelfTab(...)`
+ *   / `ExploreTab(...)` / `RssTab(...)` / `MyTab()`, 内部的 controller 回传/style 读取/
+ *   Activity 跳转全部封在 lambda 内, shared 端 MainScreen 无需感知
+ *
+ * (注: 下文提到的 `HomeTab` 是历史称谓 —— 2026-10 已把本 fork 早期加的「主页」换回
+ *  原版的「订阅」, 对应的 lambda 参数由 `homeTab` 改为 `rssTab`。)
  *
  * # 设计说明
  *
@@ -80,9 +83,9 @@ import kotlinx.coroutines.launch
  * @param settledPageSink pager 停稳页回写回调(供宿主按"真正翻到该页"门控 tab 内网络加载)
  * @param onSelectPage 跳转页回调(index)
  * @param onReselect 重选当前 tab 回调(传 tag)
- * @param homeTab 主页 tab composable (app 端注入)
  * @param bookshelfTab 书架 tab composable (app 端注入, 内部读 bookshelfStyle + 回传 controller)
  * @param exploreTab 发现 tab composable (app 端注入, 内部回传 controller)
+ * @param rssTab 订阅 tab composable (app 端注入)
  * @param myTab 我的 tab composable (app 端注入)
  * @param bottomBarIconSize 底栏图标尺寸 dp (app 端 AppConfig.bottomBarIconSize)
  * @param bottomBarHeight 底栏高度 dp (app 端 AppConfig.bottomBarHeight)
@@ -97,9 +100,9 @@ fun MainScreen(
     settledPageSink: (Int) -> Unit,
     onSelectPage: (Int) -> Unit,
     onReselect: (String) -> Unit,
-    homeTab: @Composable () -> Unit,
     bookshelfTab: @Composable () -> Unit,
     exploreTab: @Composable () -> Unit,
+    rssTab: @Composable () -> Unit,
     myTab: @Composable () -> Unit,
     bottomBarIconSize: Int,
     bottomBarHeight: Int,
@@ -162,10 +165,10 @@ fun MainScreen(
         ) { page ->
             Box(Modifier.fillMaxSize().pagerPageFocus(pagerState, page)) {
                 when (visibleTags[page]) {
-                    BottomNavTag.HOME -> homeTab()
                     // style 切换由 BookshelfTab 内部 key(style) 重建（旧 adapter POSITION_NONE 语义）
                     BottomNavTag.BOOKSHELF -> bookshelfTab()
                     BottomNavTag.DISCOVERY -> exploreTab()
+                    BottomNavTag.RSS -> rssTab()
                     else -> myTab()
                 }
             }

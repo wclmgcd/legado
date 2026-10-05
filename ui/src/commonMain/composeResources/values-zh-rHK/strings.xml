@@ -831,6 +831,7 @@
     <string name="auto_check_new_backup_s">開啟軟體時檢查是否有新備份，有新備份時提示是否更新</string>
     <string name="sys_image_picker">系統圖片選擇器</string>
     <string name="home">首頁</string>
+    <string name="rss">訂閱</string>
     <string name="home_add_section">添加組件</string>
     <string name="home_edit_section">編輯組件</string>
     <string name="home_section_title">組件標題</string>

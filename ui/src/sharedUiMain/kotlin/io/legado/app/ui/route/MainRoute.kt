@@ -109,6 +109,7 @@ import io.legado.app.ui.main.home.HomeSectionManageDialog
 import io.legado.app.ui.main.home.HomeTabManageDialog
 import io.legado.app.ui.main.home.homeSectionKey
 import io.legado.app.ui.main.my.MyConfigScreen
+import io.legado.app.ui.main.rss.RssTabContent
 import io.legado.app.ui.root.AppNavigator
 import io.legado.app.ui.root.AppRoute
 import io.legado.app.ui.root.FileFilter
@@ -166,13 +167,14 @@ import kotlin.math.roundToInt
  * 主界面 shared 路由入口。
  *
  * 装配 [MainScreen]: 根据 [AppRoute.Main.tab] 定位初始页, 注入 4 个 tab composable
- * (Home/Bookshelf/Explore/MyConfig)。
+ * (Bookshelf/Explore/Rss/MyConfig)。
+ *
+ * 2026-10: 去掉本 fork 早期加的自定义「主页」tab, 换回原版的「订阅」([RssTabContent]) ——
+ * 底部四栏 = 书架 / 发现 / 订阅 / 我的。`ui/main/home/*` 那套 Composable 仍在仓库里,
+ * 但已不被导航引用 (保留以便日后需要时恢复)。
  *
  * 对照 MainActivity: visibleTags 顺序校验 + initialPage 落点 + pageSelections 跳转流 +
  * onReselect 300ms 双击 (bookshelf gotoTop / explore compress) 均与 Activity 等价。
- * HomeTab 数据流由 [HomeScreenModel] 提供 (下沉 [io.legado.app.ui.main.home.HomeViewModelShared]);
- * slots (SectionBlock/InfiniteHeader/InfiniteGridCard) 原 app 端含 AndroidView/ShelfCover (L3),
- * shared 端用纯 Compose 实现占位 UI (标题 + 占位封面 + 书名/作者)。
  */
 @Composable
 fun MainRoute(
@@ -222,9 +224,9 @@ fun MainRoute(
     LaunchedEffect(visibleTags) {
         MainTabSwitcher.flow.collect { tab ->
             val tag = when (tab) {
-                MainTab.HOME -> BottomNavTag.HOME
                 MainTab.BOOKSHELF -> BottomNavTag.BOOKSHELF
                 MainTab.DISCOVERY -> BottomNavTag.DISCOVERY
+                MainTab.RSS -> BottomNavTag.RSS
                 MainTab.MY -> BottomNavTag.MY
             }
             val index = visibleTags.indexOf(tag)
@@ -261,9 +263,6 @@ fun MainRoute(
     var bookshelfGotoTopTick by remember { mutableIntStateOf(0) }
     // 书架 tab 是否选中: 书架 DB 订阅的另一个维度 (前台 + 栈顶由本页 Lifecycle 提供)
     val bookshelfTabSelected = visibleTags.getOrNull(currentPage) == BottomNavTag.BOOKSHELF
-    // home tab 激活态: 用停稳页判定 (对照原版仅当前 Fragment 才 onResume→initTab),
-    // 拖拽到一半又滑回不触发; 预组合的 home 页保持组合但不加载
-    val homeActive = visibleTags.getOrNull(settledPage) == BottomNavTag.HOME
 
     // ScreenModelStore 持有 BookshelfViewModel + ExploreScreenModel, 生命周期随 entry
     val mainScreenModel = screenModelStore.getOrCreateTyped(entry) { MainScreenModel() }
@@ -274,7 +273,7 @@ fun MainRoute(
     val scope = rememberCoroutineScope()
 
     // F5 刷新: 四个 tab 共享同一 entry, 故只在此处唯一注册, 按当前页分发到对应 tab 的刷新入口
-    // (书架 upToc / 首页 refreshCurrentTab; 发现、我的无刷新动作)。
+    // (仅书架有 upToc; 发现/订阅/我的无刷新动作 —— 订阅列表来自 DB flow 自动更新)。
     // 当前页用 rememberUpdatedState 透传, 保证 handler 只注册/注销一次。
     val refreshTag = rememberUpdatedState(visibleTags.getOrNull(currentPage))
     // 刷新处理器挂本页 Lifecycle 的"在栈期间" (STARTED), 不挂组合存亡:
@@ -284,7 +283,6 @@ fun MainRoute(
             navigator.registerRefreshHandler(entry.id) {
                 when (refreshTag.value) {
                     BottomNavTag.BOOKSHELF -> mainScreenModel.bookshelfViewModel.upToc()
-                    BottomNavTag.HOME -> mainScreenModel.homeScreenModel.refreshCurrentTab()
                     else -> Unit
                 }
             }
@@ -362,7 +360,7 @@ fun MainRoute(
                 }
             }
         },
-        homeTab = { HomeTabContent(mainScreenModel.homeScreenModel, navigator, homeActive) },
+        rssTab = { RssTabContent(navigator) },
         bookshelfTab = {
             BookshelfTabContent(
                 mainScreenModel.bookshelfViewModel,
@@ -404,21 +402,26 @@ private class MainScreenModel : ScreenModel {
     }
 }
 
-/** 对照 MainActivity.computeVisibleTags: 顺序配置校验 + showHome/showDiscovery 过滤 */
+/**
+ * 顺序配置校验 + showDiscovery 过滤。
+ *
+ * 2026-10: 主页换回订阅。订阅 tab **恒显** (不再有 showHome 开关), 故这里只过滤发现。
+ * 旧偏好 `bottomNavItemOrder = "home,bookshelf,discovery,my"` 的 tag 集合与新默认集合
+ * 不同 → 判为非法 → 回落 [defaultTagOrder], 用户无需手动重置底栏设置。
+ */
 private fun computeVisibleTags(appConfig: AppConfigAccessor): List<String> {
     val defaultTagOrder = listOf(
-        BottomNavTag.HOME,
         BottomNavTag.BOOKSHELF,
         BottomNavTag.DISCOVERY,
+        BottomNavTag.RSS,
         BottomNavTag.MY,
     )
     val savedTagOrder = appConfig.bottomNavItemOrder.split(",").filter { it.isNotEmpty() }
     val orderedTags = savedTagOrder
-        .takeIf { it.size == 4 && it.toSet() == defaultTagOrder.toSet() }
+        .takeIf { it.size == defaultTagOrder.size && it.toSet() == defaultTagOrder.toSet() }
         ?: defaultTagOrder
     val tags = orderedTags.filter { tag ->
         when (tag) {
-            BottomNavTag.HOME -> appConfig.showHome
             BottomNavTag.DISCOVERY -> appConfig.showDiscovery
             else -> true
         }
@@ -430,7 +433,8 @@ private fun computeVisibleTags(appConfig: AppConfigAccessor): List<String> {
 private fun computeHomePageIndex(visibleTags: List<String>, defaultHomePage: String): Int {
     val bookshelfPos = visibleTags.indexOf(BottomNavTag.BOOKSHELF)
     val pos = when (defaultHomePage) {
-        "home" -> visibleTags.indexOf(BottomNavTag.HOME)
+        // 旧的 "home" (主页已移除) 走 else 分支回落书架, 不会落到不存在的 tab
+        "rss" -> visibleTags.indexOf(BottomNavTag.RSS)
         "bookshelf" -> bookshelfPos
         "explore" -> visibleTags.indexOf(BottomNavTag.DISCOVERY)
         "my" -> visibleTags.indexOf(BottomNavTag.MY)

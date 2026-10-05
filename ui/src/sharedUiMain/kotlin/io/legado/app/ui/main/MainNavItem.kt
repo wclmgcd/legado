@@ -97,15 +97,15 @@ internal fun MainNavItem(
 
 // selector 不被 painterResource 支持, 按选中态直取 _s(实心)/_e(空心) vector
 private fun String.iconKey(selected: Boolean) = when (this) {
-    BottomNavTag.HOME -> if (selected) "ic_bottom_home_s" else "ic_bottom_home_e"
     BottomNavTag.BOOKSHELF -> if (selected) "ic_bottom_books_s" else "ic_bottom_books_e"
     BottomNavTag.DISCOVERY -> if (selected) "ic_bottom_explore_s" else "ic_bottom_explore_e"
+    BottomNavTag.RSS -> if (selected) "ic_bottom_rss_s" else "ic_bottom_rss_e"
     else -> if (selected) "ic_bottom_person_s" else "ic_bottom_person_e"
 }
 
 private fun String.labelKey() = when (this) {
-    BottomNavTag.HOME -> "home"
     BottomNavTag.BOOKSHELF -> "bookshelf"
     BottomNavTag.DISCOVERY -> "discovery"
+    BottomNavTag.RSS -> "rss"
     else -> "my"
 }
