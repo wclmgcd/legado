@@ -248,6 +248,54 @@ object QReadApi {
     }
 
     // ---------------------------------------------------------------------
+    // 书源登录态 (Cookie)
+    // ---------------------------------------------------------------------
+
+    /**
+     * 拉取该用户在后端保存的**全部**书源登录 cookie。
+     *
+     * # 为什么是整表
+     * 后端 `CookieStore` 的落盘 key 是 `NetworkUtils.getSubDomain(被登录的页面 url)` ——
+     * 也就是**目标站点的二级域名**, 与「哪个书源」无关 (一个书源可能登录多个站点, 多个书源
+     * 也可能共用同一个站点)。所以没法按书源逐个查, 只能整表搬。
+     *
+     * # 为什么和本地能对上
+     * legado 本地 `cookies` 表的 `url` 列存的也是 `NetworkUtils.getSubDomain(url)` 的结果
+     * (见 `CookieStoreBase.setCookie` → `onInsertCookieToDb(domain, ...)`), 两边算法一致
+     * (`getBaseUrl` + `PublicSuffixDatabase.getEffectiveTldPlusOne(host) ?: host`),
+     * 所以 `domain` 可以直接当 key 对上。
+     *
+     * @return `data` 是 `{二级域名: cookie串}`; 后端没有 cookie 时是空对象
+     */
+    suspend fun getAllCookies(
+        serverUrl: String,
+        accessToken: String,
+    ): QReadResponse<Map<String, String>> = request {
+        client.newCallStrResponse {
+            get("${apiBase(serverUrl)}/getAllCookies", mapOf("accessToken" to accessToken))
+        }.body
+    }
+
+    /**
+     * 把本地 cookie 整表推给后端 (后端**直接覆盖**同名域名)。
+     *
+     * 冲突策略不在这一层: 调用方只上传「本地本来就有的」域名, 后端拿到什么写什么。
+     * 见 [QReadSync.syncCookiesLocked] 的说明。
+     */
+    suspend fun saveAllCookies(
+        serverUrl: String,
+        accessToken: String,
+        cookies: Map<String, String>,
+    ): QReadResponse<JsonElement> = request {
+        client.newCallStrResponse {
+            // 与 getBookSourceJson 同一手法: 先 get() 建好 URL + query (参数会被正确编码),
+            // 再 postJson() 覆盖方法与 body —— 后调者生效, 最终是 POST + JSON body。
+            get("${apiBase(serverUrl)}/saveAllCookies", mapOf("accessToken" to accessToken))
+            postJson(GSON.toJson(cookies))
+        }.body
+    }
+
+    // ---------------------------------------------------------------------
     // 阅读进度
     // ---------------------------------------------------------------------
 

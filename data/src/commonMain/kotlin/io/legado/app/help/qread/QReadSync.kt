@@ -6,6 +6,7 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.Server
+import io.legado.app.help.http.CookieStoreProviders
 import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.systemCurrentTimeMillis
@@ -110,6 +111,7 @@ object QReadSession {
  * | 数据 | 方向 | 说明 |
  * |---|---|---|
  * | 书源 | 后端 → 本地 | 后端为准, 按 bookSourceUrl 覆盖 |
+ * | 登录态 | 双向 | 本地已有的域以本地为准并推给后端; 本地没有的从后端补下来 |
  * | 书架 | 后端 → 本地 | 后端为准; 进度只前进不后退 |
  * | 进度 | 本地 → 后端 | 阅读时/手动触发上传 |
  * | 搜索记录 | 双向合并 | 按词取并集, 不会互相覆盖 |
@@ -158,6 +160,10 @@ object QReadSync {
         val bookCount: Int = 0,
         val groupCount: Int = 0,
         val searchCount: Int = 0,
+        /** 从后端补下来的登录态域名数 (本地原本没有的)。 */
+        val cookiePulled: Int = 0,
+        /** 推给后端的登录态域名数 (本地原本就有的)。 */
+        val cookiePushed: Int = 0,
         val error: String? = null,
         /** 非致命的部分失败 (某一段失败但其余成功), 供 UI 提示定位。 */
         val warnings: List<String> = emptyList(),
@@ -171,6 +177,7 @@ object QReadSync {
                 append("、书籍 ").append(bookCount)
                 append("、分组 ").append(groupCount)
                 append("、搜索记录 ").append(searchCount)
+                append("、登录态 拉").append(cookiePulled).append("推").append(cookiePushed)
                 if (warnings.isNotEmpty()) {
                     append("\n⚠ ").append(warnings.joinToString("; "))
                 }
@@ -178,7 +185,7 @@ object QReadSync {
     }
 
     /**
-     * 全量同步: 书源 → 分组 → 书架 → 搜索记录。
+     * 全量同步: 书源 → 登录态 → 分组 → 书架 → 搜索记录。
      *
      * # 为什么整段包在 [NonCancellable] 里 (重要)
      * 调用方是 Compose 页面, 用的是 `rememberCoroutineScope()` —— 用户一切 tab / 一返回,
@@ -195,6 +202,7 @@ object QReadSync {
         return@withLock withContext(NonCancellable) {
             try {
                 val sources = syncBookSourcesLocked()
+                val cookies = syncCookiesLocked()
                 val shelf = syncBookshelfLocked()
                 val search = syncSearchHistoryLocked()
                 Result(
@@ -202,8 +210,10 @@ object QReadSync {
                     bookCount = shelf.count,
                     groupCount = shelf.extra,
                     searchCount = search.count,
+                    cookiePulled = cookies.count,
+                    cookiePushed = cookies.extra,
                     warnings = listOfNotNull(
-                        sources.warning, shelf.warning, search.warning,
+                        sources.warning, cookies.warning, shelf.warning, search.warning,
                     ),
                 )
             } catch (e: CancellationException) {
@@ -365,6 +375,97 @@ object QReadSync {
         if (failedBatches.isNotEmpty()) notes += "书源导出失败 ${failedBatches.sum()} 个"
         if (skipped > 0) notes += "$skipped 个源解析失败已跳过"
         return Stage(written, warning = notes.takeIf { it.isNotEmpty() }?.joinToString("; "))
+    }
+
+    /**
+     * 书源**登录态** (Cookie) 双向同步。
+     *
+     * # 为什么可以整表搬
+     * 两边都以 `NetworkUtils.getSubDomain(url)` (eTLD+1) 当 key:
+     * - 后端 `CookieStore(userid)` 落盘到 `storage/cookies/{userid}/{二级域名}`;
+     * - legado 本地 `cookies` 表 `url` 列存的就是 `CookieStoreBase.setCookie` 算出的二级域名。
+     * 两处 `getSubDomain` 实现一致 (`getBaseUrl` + `PublicSuffixDatabase.getEffectiveTldPlusOne`),
+     * 所以 key 能直接对上, 不需要任何映射。
+     *
+     * # 冲突策略: 本地已有 → 以本地为准
+     * 两边都没有时间戳, 无法判断谁更新。这里用**无状态的**规则:
+     *
+     * | 本地 | 后端 | 动作 |
+     * |---|---|---|
+     * | 有 | 有 | **保留本地**, 并把它推给后端 (本地为准) |
+     * | 无 | 有 | 从后端**补下来** ← 用户要的「轻阅读登录好了, 同步过来也该是登录好的」 |
+     * | 有 | 无 | 推给后端 |
+     * | 无 | 无 | 不动 |
+     *
+     * 关键在「本地原有的域名」这一集合在**拉取之前**就固定下来 ([localBefore]),
+     * 拉下来的那些不算「本地所有」, 所以不会被反手推回去覆盖后端。
+     *
+     * 代价要说清楚: 若同一个域在轻阅读侧重新登录过, 而 legado 本地还留着旧 cookie,
+     * 下次同步会把旧的推回去。想以服务端为准, 就在 legado 里删掉该源的登录态
+     * (清 Cookie) 再同步。
+     *
+     * @return [Stage.count] = 补下来的域名数, [Stage.extra] = 推上去的域名数
+     */
+    private suspend fun syncCookiesLocked(): Stage {
+        val url = QReadSession.serverUrl ?: return Stage(0, warning = "未连接轻阅读后端")
+        val token = QReadSession.accessToken ?: return Stage(0, warning = "未连接轻阅读后端")
+        val store = CookieStoreProviders.get()
+            ?: return Stage(0, warning = "Cookie 存储未注册")
+
+        val dao = AppDbProviders.get().cookieDao
+        // 拉取**之前**的本地快照 = 「本地所有」的域名集合。必须在 pull 前取,
+        // 否则刚补下来的域名会被当成本地所有再推回后端, 把服务端的值绕一圈覆盖成一样的东西
+        // (无害, 但会在服务端刷新过登录态时把旧值写回去)。
+        val localBefore = dao.allByDomain()
+            .filter { it.cookie.isNotBlank() && isSyncableDomain(it.url) }
+            .associate { it.url to it.cookie }
+
+        val resp = QReadApi.getAllCookies(url, token)
+        if (!resp.isSuccess) {
+            return Stage(0, warning = "登录态拉取失败: ${resp.errorMsg}")
+        }
+
+        var pulled = 0
+        var skipped = 0
+        resp.data.orEmpty().forEach { (domain, cookie) ->
+            if (cookie.isBlank() || !isSyncableDomain(domain)) {
+                skipped++
+                return@forEach
+            }
+            if (localBefore.containsKey(domain)) return@forEach
+            // setCookie 只接受 http(s) 开头的 url, 内部会再算一次 getSubDomain ——
+            // 传 "https://$domain" 算回来仍是 $domain (非域名形态的 key 也会原样返回),
+            // 所以 key 不会变形。顺带把内存缓存与 WebView 一起更新了。
+            store.setCookie("https://$domain", cookie)
+            pulled++
+        }
+
+        var pushed = 0
+        if (localBefore.isNotEmpty()) {
+            val save = QReadApi.saveAllCookies(url, token, localBefore)
+            if (!save.isSuccess) {
+                return Stage(pulled, warning = "登录态上传失败: ${save.errorMsg}")
+            }
+            pushed = localBefore.size
+        }
+
+        val notes = mutableListOf<String>()
+        if (skipped > 0) notes += "$skipped 个域名不合法已跳过"
+        return Stage(pulled, pushed, notes.takeIf { it.isNotEmpty() }?.joinToString("; "))
+    }
+
+    /**
+     * 这个 key 能不能安全地当 cookie 域名用。
+     *
+     * 后端的 key 是 `getSubDomain(url)` 的结果, 而 `getSubDomain` 对**非 url 形态**的输入
+     * 会原样返回 —— 真实数据里就有 `'大灰狼融合VIP5.0'`、`'69-明月'` 这种书源 url。
+     * 这类 key 拿去拼 `"https://$key"` 会写出一个永远读不回来的垃圾记录, 所以直接跳过。
+     * 同时挡住带路径分隔符的 key (目录穿越)。
+     */
+    private fun isSyncableDomain(domain: String): Boolean {
+        if (domain.isBlank()) return false
+        if (domain.contains("..")) return false
+        return domain.none { it.isWhitespace() || it == '/' || it == '\\' }
     }
 
     /**

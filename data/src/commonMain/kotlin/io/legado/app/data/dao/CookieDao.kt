@@ -22,4 +22,14 @@ interface CookieDao {
 
     @Query("delete from cookies where url like '%|%'")
     suspend fun deleteOkHttp()
+
+    /**
+     * 列出全部**按域名**存的 cookie。
+     *
+     * 排除 OkHttp cookie jar 的条目: 那批的 `url` 是 `域名|cookie名` 形态
+     * (见 [deleteOkHttp]), 一个域名会有几十条, 拿去做整表同步既没意义也会把
+     * 域名当 key 覆盖掉正常记录。
+     */
+    @Query("select * from cookies where url not like '%|%'")
+    suspend fun allByDomain(): List<Cookie>
 }
