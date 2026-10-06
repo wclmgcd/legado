@@ -170,7 +170,7 @@ import kotlin.math.roundToInt
  * (Bookshelf/Explore/Rss/MyConfig)。
  *
  * 2026-10: 去掉本 fork 早期加的自定义「主页」tab, 换回原版的「订阅」([RssTabContent]) ——
- * 底部四栏 = 书架 / 发现 / 订阅 / 我的。`ui/main/home/*` 那套 Composable 仍在仓库里,
+ * 底部四栏 = 书架 / 发现 / 订阅 / 我的。`ui/main/home` 目录下那套 Composable 仍在仓库里,
  * 但已不被导航引用 (保留以便日后需要时恢复)。
  *
  * 对照 MainActivity: visibleTags 顺序校验 + initialPage 落点 + pageSelections 跳转流 +
