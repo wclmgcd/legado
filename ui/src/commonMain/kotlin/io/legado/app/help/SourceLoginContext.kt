@@ -4,6 +4,7 @@ import io.legado.app.data.AppDbProviders
 import io.legado.app.data.entities.BaseBook
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookSource
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.help.toast.Toasters
 import io.legado.app.ui.root.AppNavigatorProviders
@@ -97,6 +98,21 @@ private fun dispatchSourceLogin(
     book: BaseBook?,
     chapter: BookChapter?,
 ) {
+    // 远端解析的源 (轻阅读同步来的) 不做本地登录。
+    //
+    // 轻阅读把书源的登录态存成**服务器上的 Cookie 文件**
+    // (后端 `CookieStore(userid)` → `storage/cookies/{userid}/{子域名}`),
+    // 且没有任何接口把它暴露出来 —— 后端 `SourceController` 全部 25 个路由里
+    // 没有一个跟登录态有关。所以本地 CookieStore 永远是空的, 点「登录」进来
+    // 只会看到「未登录」, 让人误以为同步坏了。
+    //
+    // 但**本地登录本来就没有意义**: 这些源的搜索/目录/正文全部由后端 Rhino 带着
+    // 服务端的 Cookie 去请求 (见 BookSource.remoteParse), 本地登录拿到的 Cookie
+    // 一个字节都用不上。这里直接把入口拦掉并说明原因, 而不是让用户白登一次。
+    if ((source as? BookSource)?.remoteParse == true) {
+        Toasters.get().toast("该源为远端解析，登录态由轻阅读后端维护，本地无需登录")
+        return
+    }
     if (source.loginUi.isNullOrEmpty()) {
         // URL 登录: 原版 startActivity<WebViewActivity> { url/title/sourceName/sourceOrigin/
         // sourceType/isLogin }, 标题栏文案与源标识全程带着走
