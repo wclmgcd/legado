@@ -12,6 +12,7 @@ import io.legado.app.data.entities.rule.ReviewRule
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.IntentDataProviders
 import io.legado.app.help.http.StrResponse
+import io.legado.app.help.qread.QReadRemoteBook
 import io.legado.app.help.source.SourceDebugLoggers
 import io.legado.app.model.analyzeRule.AnalyzeRuleFactories
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
@@ -52,6 +53,15 @@ object WebBook {
         onUrlResolved: ((AnalyzeUrlCore) -> Unit)? = null,
         selectedOptions: Map<String, String>? = null,
     ): BookListPage {
+        // 远端解析: 规则交给轻阅读后端跑, 本地完全不走 AnalyzeUrl / JS。
+        // filter 仍在本地应用 (它是 UI 侧的过滤条件, 与解析位置无关)。
+        if (bookSource.remoteParse) {
+            val pageResult = QReadRemoteBook.search(bookSource, key, page ?: 1, isSearch)
+            if (filter == null) return pageResult
+            return pageResult.copy(
+                books = ArrayList(pageResult.books.filter { filter(it.name, it.author) })
+            )
+        }
         var url = key
         if (isSearch) {
             if (bookSource.searchUrl.isNullOrBlank()) throw NoStackTraceException("搜索url不能为空")
@@ -94,6 +104,10 @@ object WebBook {
         book: Book,
         canReName: Boolean = true,
     ): Book {
+        // 远端解析: 后端没有独立的「书籍详情」接口, 但搜索/发现返回的 SearchBook 已带
+        // 封面 / 简介 / 分类 / 字数 / 最新章 —— 详情页所需信息已经够用。
+        // 这里直接返回原 book, 不去用 legado 的 bookInfoRule 请求目标站 (那是本地解析的语义)。
+        if (bookSource.remoteParse) return book
         if (!book.infoHtml.isNullOrEmpty()) {
             BookInfo.analyzeBookInfo(
                 bookSource = bookSource,
@@ -176,6 +190,15 @@ object WebBook {
         runPerJs: Boolean = false
     ): Result<List<BookChapter>> {
         return runCatching {
+            // 远端解析: 目录由后端规则引擎给出。顺序不做任何本地调整 —— 后端用的是同一套
+            // 规则引擎, 顺序与本地解析一致, 统一交给 BookChapterList.updateBook 处理
+            // (它按 book.config.reverseToc 决定是否反转, 并重排 index)。
+            if (bookSource.remoteParse) {
+                return@runCatching BookChapterList.updateBook(
+                    book,
+                    QReadRemoteBook.getChapterList(bookSource, book)
+                )
+            }
             if (runPerJs) {
                 runPreUpdateJs(bookSource, book).getOrThrow()
             }
@@ -231,6 +254,11 @@ object WebBook {
         nextChapterUrl: String? = null,
         needSave: Boolean = true
     ): String {
+        // 远端解析: 正文由后端规则引擎给出 (后端返回的就是解析好的正文文本),
+        // 不需要 legado 的 contentRule / nextChapterUrl 那一套处理。
+        if (bookSource.remoteParse) {
+            return QReadRemoteBook.getContent(book, bookChapter)
+        }
         if (bookSource.contentRule.content.isNullOrEmpty()) {
             SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "⇒正文规则为空,使用章节链接:${bookChapter.url}")
             return bookChapter.url

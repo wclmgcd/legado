@@ -284,6 +284,7 @@ fun BookSourceEditRoute(
             },
             onEnabledReviewChange = { editState.enabledReview = it },
             onEnabledExploreChange = { editState.enabledExplore = it },
+            onRemoteParseChange = { editState.remoteParse = it },
             onExploreStyleChange = { editState.exploreStyleIndex = it },
             onExploreColsChange = { editState.exploreColsIndex = it },
             onTabChange = { editState.currentTab = it },
@@ -374,6 +375,7 @@ private fun applySourceToEditState(bs: BookSource, editState: BookSourceEditStat
     editState.enableDangerousApi = bs.enableDangerousApi == true
     editState.enabledExplore = bs.enabledExplore
     editState.enabledReview = bs.enabledReview
+    editState.remoteParse = bs.remoteParse
     editState.exploreStyleIndex = if (BookSource.exploreStyleIsVideo(bs.exploreStyle)) 1 else 0
     editState.exploreColsIndex = BookSource.exploreStyleCols(bs.exploreStyle).coerceIn(0, 6)
     editState.sourceVersion++

@@ -328,9 +328,12 @@ object QReadApi {
     // ---------------------------------------------------------------------
 
     /**
-     * 用后端书源引擎搜索。
+     * 用后端书源引擎搜索 / 发现。
      *
-     * @param type 0=搜索, 1=发现 (对应后端 `search(..., type)`)
+     * @param type **1 = 搜索, 2 = 发现** —— 后端 `BookController.search` 是
+     *   `when(type) { 1 -> searchBook(...); 2 -> exploreBook(...); else -> throw }`,
+     *   所以**只能传 1 或 2** (默认值必须是 1, 传 0 会被后端直接拒绝)。
+     *   注意 `/searchBook` 与 `/exploreBook` 两个路由最终都落到同一个 `search()`。
      */
     suspend fun searchBook(
         serverUrl: String,
@@ -338,7 +341,7 @@ object QReadApi {
         bookSourceUrl: String,
         key: String,
         page: Int = 1,
-        type: Int = 0,
+        type: Int = 1,
     ): QReadResponse<JsonElement> = requestJson(
         "/searchBook", serverUrl, accessToken,
         mapOf(

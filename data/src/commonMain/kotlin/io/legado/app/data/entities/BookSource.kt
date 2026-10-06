@@ -61,6 +61,23 @@ data class BookSource(
     // 启用段评
     @ColumnInfo(defaultValue = "1")
     var enabledReview: Boolean = true,
+    /**
+     * 远端解析: true = 搜索 / 目录 / 正文都交给**轻阅读后端引擎**执行, 本地不跑规则。
+     *
+     * 轻阅读是远端解析(规则在服务端 Rhino 里跑, 客户端只是展示层), legado 是本地解析
+     * (本地 JS 引擎跑规则)。同一个书源两种跑法都能出结果, 但:
+     * - 远端解析能用上服务端的登录态(登录 cookie 存在服务端 `CookieStore`)、
+     *   服务端缓存与并发调度, 且规则更新无需重导书源;
+     * - 本地解析不依赖后端可用性。
+     *
+     * 由轻阅读同步而来的书源会自动置 true ([io.legado.app.help.qread.QReadMapper.applyServerState]);
+     * 本地导入(剪贴板/文件/分享)的书源默认 false, 保持原行为。
+     *
+     * @ColumnInfo(defaultValue = "0") 保证 AutoMigration 87→88 时老数据回落 false,
+     * 也就是**升级后所有既有书源仍走本地解析**, 行为不变。
+     */
+    @ColumnInfo(defaultValue = "0")
+    var remoteParse: Boolean = false,
     // js库
     override var jsLib: String? = null,
     // 启用okhttp CookieJAr 自动保存每次请求的cookie

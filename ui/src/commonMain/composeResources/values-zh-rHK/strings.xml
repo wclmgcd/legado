@@ -832,6 +832,7 @@
     <string name="sys_image_picker">系統圖片選擇器</string>
     <string name="home">首頁</string>
     <string name="rss">訂閱</string>
+    <string name="remote_parse">遠端解析</string>
     <string name="home_add_section">添加組件</string>
     <string name="home_edit_section">編輯組件</string>
     <string name="home_section_title">組件標題</string>

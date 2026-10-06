@@ -145,6 +145,7 @@ class BookSourceEditScreenModel(
         source.enableDangerousApi = editState.enableDangerousApi
         source.enabledExplore = editState.enabledExplore
         source.enabledReview = editState.enabledReview
+        source.remoteParse = editState.remoteParse
         val exploreVideo = editState.exploreStyleIndex == 1
         source.exploreStyle = (if (exploreVideo) BookSource.EXPLORE_STYLE_VIDEO_FLAG else 0) or
             (editState.exploreColsIndex and BookSource.EXPLORE_STYLE_COLS_MASK)

@@ -479,6 +479,7 @@
     <string name="explore_style_video">Video</string>
     <string name="home">Home</string>
     <string name="rss">RSS</string>
+    <string name="remote_parse">Remote parse</string>
     <string name="home_manage">Manage sections</string>
     <string name="home_more">More</string>
     <string name="home_tab_empty">No sections in this group, tap + in upper right to add</string>

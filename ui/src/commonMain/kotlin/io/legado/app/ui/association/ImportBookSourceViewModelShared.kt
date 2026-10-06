@@ -113,6 +113,15 @@ class ImportBookSourceViewModelShared(
     val updateSourceStatus = arrayListOf<Boolean>()
 
     /**
+     * 本次导入的书源是否标记为**远端解析** (搜索/目录/正文交给轻阅读后端执行)。
+     *
+     * 由导入对话框的溢出菜单选项写入 (见 `ImportBookSourceItemsDialog`), 默认 false =
+     * 保持 legado 原生本地解析。不做成 [importSelect] 的形参是为了不动
+     * `ImportItemsDialogAdapter.importSelect` 那个 7 个实现共用的接口。
+     */
+    var remoteParse: Boolean = false
+
+    /**
      * 导入选中的书源, 对应 app 端 `importSelect(finally)`。
      *
      * # 实现细节保持
@@ -143,6 +152,10 @@ class ImportBookSourceViewModelShared(
             checked.forEachIndexed { index, b ->
                 if (b) {
                     val source = allSources[index]
+                    // 导入时统一决定这批书源走远端还是本地解析 (对话框溢出菜单里的选项)。
+                    // 放在 checkSources 还原逻辑之前: 那几个 keep* 分支不会碰 remoteParse,
+                    // 所以顺序其实无关, 但写在最前更清楚"这是整批的默认值"。
+                    source.remoteParse = remoteParse
                     checkSources[index]?.let {
                         if (keepName) source.bookSourceName = it.bookSourceName
                         if (keepGroup) source.bookSourceGroup = it.bookSourceGroup

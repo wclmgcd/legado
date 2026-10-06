@@ -100,6 +100,11 @@ object QReadMapper {
         // 是有意义的语义 (Snack 会省略该 key, kotlinx 用默认值 null 接住)。
         // 保留 json 里的旧分组反而会同步出一个后端已经不存在的分组。
         src.bookSourceGroup = brief.bookSourceGroup
+        // 轻阅读是**远端解析** (规则在服务端 Rhino 里跑), 所以从它同步来的书源一律标记为
+        // 远端解析 —— 否则本地跑一遍同样的规则, 既拿不到服务端的登录态, 也白等一次网络往返。
+        // 与其它字段一样**以远端为准**: 手动改成 false 后, 下次同步会被重置回 true
+        // (这与本同步「不合并本地改动」的既有策略一致)。
+        src.remoteParse = true
         return src
     }
 

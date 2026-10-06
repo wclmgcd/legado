@@ -61,6 +61,7 @@ import legado.ui.generated.resources.import_state_update
 import legado.ui.generated.resources.keep_enable
 import legado.ui.generated.resources.keep_group
 import legado.ui.generated.resources.keep_original_name
+import legado.ui.generated.resources.remote_parse
 import legado.ui.generated.resources.ok
 import legado.ui.generated.resources.select_new_source
 import legado.ui.generated.resources.select_update_source
@@ -195,6 +196,8 @@ fun ImportBookSourceItemsDialog(
     var keepName by remember { mutableStateOf(config.importKeepName) }
     var keepGroup by remember { mutableStateOf(config.importKeepGroup) }
     var keepEnable by remember { mutableStateOf(config.importKeepEnable) }
+    // 远端解析: 一次性的导入决策 (不是全局偏好), 所以不落 AppConfig, 只存本次会话
+    var remoteParse by remember { mutableStateOf(false) }
     ImportItemsDialog(
         title = stringResource(Res.string.import_book_source),
         vm = adapter,
@@ -257,6 +260,15 @@ fun ImportBookSourceItemsDialog(
                     ) {
                         keepEnable = !keepEnable
                         config.importKeepEnable = keepEnable
+                    }
+                    // 远端解析: 勾上后这批书源的搜索/目录/正文都交给轻阅读后端跑
+                    // (需要先在设置里连上轻阅读后端, 否则运行时会提示"未连接")。
+                    ImportOptionMenuItem(
+                        text = stringResource(Res.string.remote_parse),
+                        checked = remoteParse,
+                    ) {
+                        remoteParse = !remoteParse
+                        vm.remoteParse = remoteParse
                     }
                 }
             }

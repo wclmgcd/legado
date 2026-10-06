@@ -260,6 +260,11 @@ class BookSourceEditState {
     var enableDangerousApi by mutableStateOf(false)
     var enabledExplore by mutableStateOf(false)
     var enabledReview by mutableStateOf(false)
+    /**
+     * 远端解析: 搜索 / 目录 / 正文交给轻阅读后端执行, 本地不跑规则。
+     * 见 [io.legado.app.data.entities.BookSource.remoteParse]。
+     */
+    var remoteParse by mutableStateOf(false)
     var exploreStyleIndex by mutableIntStateOf(0)
     var exploreColsIndex by mutableIntStateOf(0)
     var currentTab by mutableIntStateOf(0)
@@ -297,6 +302,8 @@ data class BookSourceEditCallbacks(
     val onEnableDangerousApiClick: (Boolean) -> Unit = {},
     val onEnabledReviewChange: (Boolean) -> Unit = {},
     val onEnabledExploreChange: (Boolean) -> Unit = {},
+    /** 远端解析开关变更 (见 [BookSourceEditState.remoteParse]) */
+    val onRemoteParseChange: (Boolean) -> Unit = {},
     val onExploreStyleChange: (Int) -> Unit = {},
     val onExploreColsChange: (Int) -> Unit = {},
     val onTabChange: (Int) -> Unit = {},
@@ -419,6 +426,11 @@ private fun HeaderRow2(state: BookSourceEditState, callbacks: BookSourceEditCall
     ) {
         HeaderCheckBox("discovery", state.enabledExplore) {
             callbacks.onEnabledExploreChange(it)
+        }
+        // 远端解析: 勾上后这个源的搜索/目录/正文都交给轻阅读后端跑。
+        // 放在「启用发现」旁边是因为同属"这个源怎么跑"的开关, 与右侧的发现样式分开。
+        HeaderCheckBox("remote_parse", state.remoteParse) {
+            callbacks.onRemoteParseChange(it)
         }
         Row(
             Modifier.padding(vertical = DesignTokens.spacingDefault),
