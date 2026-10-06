@@ -10,8 +10,11 @@ import io.legado.app.utils.GSON
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.systemCurrentTimeMillis
 import io.legado.app.utils.toJson
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
@@ -136,6 +139,19 @@ object QReadSync {
      */
     private const val SOURCE_EXPORT_BATCH = 30
 
+    /**
+     * 单个阶段的执行结果。
+     *
+     * [warning] 是**非致命**的部分失败说明 —— 例如「书架第 2 页拉取失败, 但第 1 页已写入」。
+     * 这类信息必须能让用户看到: 否则界面只显示「书籍 0」, 而原因只躺在 AppLog 里,
+     * 用户描述不清、开发者也无从下手。
+     */
+    private data class Stage(
+        val count: Int,
+        val extra: Int = 0,
+        val warning: String? = null,
+    )
+
     /** 一轮同步的结果, 供 UI 提示。 */
     data class Result(
         val sourceCount: Int = 0,
@@ -143,39 +159,74 @@ object QReadSync {
         val groupCount: Int = 0,
         val searchCount: Int = 0,
         val error: String? = null,
+        /** 非致命的部分失败 (某一段失败但其余成功), 供 UI 提示定位。 */
+        val warnings: List<String> = emptyList(),
     ) {
         val isSuccess: Boolean get() = error == null
+
+        /** 一行摘要, 供 toast 直接用。 */
+        val summary: String
+            get() = buildString {
+                append("书源 ").append(sourceCount)
+                append("、书籍 ").append(bookCount)
+                append("、分组 ").append(groupCount)
+                append("、搜索记录 ").append(searchCount)
+                if (warnings.isNotEmpty()) {
+                    append("\n⚠ ").append(warnings.joinToString("; "))
+                }
+            }
     }
 
-    /** 全量同步: 书源 → 分组 → 书架 → 搜索记录。 */
+    /**
+     * 全量同步: 书源 → 分组 → 书架 → 搜索记录。
+     *
+     * # 为什么整段包在 [NonCancellable] 里 (重要)
+     * 调用方是 Compose 页面, 用的是 `rememberCoroutineScope()` —— 用户一切 tab / 一返回,
+     * 该作用域立即被取消。而同步是**多阶段写库**行为 (先书源、后书架), 取消在中间就会留下
+     * 「书源同步好了、书架一本没有」的**半成品状态**; 更糟的是作用域已死, 连结果 toast 都
+     * 弹不出来, 用户完全看不出发生过什么。
+     *
+     * 所以一旦开始就必须跑完。网络调用自身有超时, 不会无限占用 [mutex]。
+     */
     suspend fun syncAll(): Result = mutex.withLock {
         if (!QReadSession.isConnected) {
             return@withLock Result(error = "未连接轻阅读后端")
         }
-        return@withLock try {
-            val sourceCount = syncBookSourcesLocked()
-            val shelf = syncBookshelfLocked()
-            val searchCount = syncSearchHistoryLocked()
-            Result(
-                sourceCount = sourceCount,
-                bookCount = shelf.first,
-                groupCount = shelf.second,
-                searchCount = searchCount,
-            )
-        } catch (e: Exception) {
-            AppLog.put("轻阅读同步失败\n${e.message}", e)
-            Result(error = e.message ?: "同步失败")
+        return@withLock withContext(NonCancellable) {
+            try {
+                val sources = syncBookSourcesLocked()
+                val shelf = syncBookshelfLocked()
+                val search = syncSearchHistoryLocked()
+                Result(
+                    sourceCount = sources.count,
+                    bookCount = shelf.count,
+                    groupCount = shelf.extra,
+                    searchCount = search.count,
+                    warnings = listOfNotNull(
+                        sources.warning, shelf.warning, search.warning,
+                    ),
+                )
+            } catch (e: CancellationException) {
+                // 理论上进不来 (外层 NonCancellable); 真进来了必须原样抛出,
+                // 否则会把协程取消当成业务失败吞掉。
+                throw e
+            } catch (e: Exception) {
+                AppLog.put("轻阅读同步失败\n${e.message}", e)
+                Result(error = e.message ?: "同步失败")
+            }
         }
     }
 
     /** 仅同步书源。返回写入条数。 */
-    suspend fun syncBookSources(): Int = mutex.withLock { syncBookSourcesLocked() }
+    suspend fun syncBookSources(): Int = mutex.withLock { syncBookSourcesLocked().count }
 
     /** 仅同步书架 (含分组)。返回 (书籍数, 分组数)。 */
-    suspend fun syncBookshelf(): Pair<Int, Int> = mutex.withLock { syncBookshelfLocked() }
+    suspend fun syncBookshelf(): Pair<Int, Int> = mutex.withLock {
+        syncBookshelfLocked().let { it.count to it.extra }
+    }
 
     /** 仅同步搜索记录。返回合并后条数。 */
-    suspend fun syncSearchHistory(): Int = mutex.withLock { syncSearchHistoryLocked() }
+    suspend fun syncSearchHistory(): Int = mutex.withLock { syncSearchHistoryLocked().count }
 
     // ---------------------------------------------------------------------
     // 具体实现 (调用方必须已持有 mutex 且已登录)
@@ -222,20 +273,18 @@ object QReadSync {
      * 以**后端为准** (而不是合并): 轻阅读的书源由服务端统一维护, 本地改动会在下次
      * 同步被覆盖, 这是预期行为 —— 想保留本地改动就不要用后端书源同步。
      */
-    private suspend fun syncBookSourcesLocked(): Int {
-        val url = QReadSession.serverUrl ?: return 0
-        val token = QReadSession.accessToken ?: return 0
+    private suspend fun syncBookSourcesLocked(): Stage {
+        val url = QReadSession.serverUrl ?: return Stage(0, warning = "未连接轻阅读后端")
+        val token = QReadSession.accessToken ?: return Stage(0, warning = "未连接轻阅读后端")
 
         // ---- 第 1 步: 分页准备 ----
         val pageResp = QReadApi.getBookSourcesPage(url, token)
         if (!pageResp.isSuccess) {
-            AppLog.put("轻阅读书源准备失败: ${pageResp.errorMsg}")
-            return 0
+            return Stage(0, warning = "书源准备失败: ${pageResp.errorMsg}")
         }
         val md5 = pageResp.data?.md5.orEmpty()
         if (md5.isBlank()) {
-            AppLog.put("轻阅读书源 md5 为空，跳过")
-            return 0
+            return Stage(0, warning = "书源 md5 为空")
         }
         val totalPages = (pageResp.data?.page ?: 1).coerceAtLeast(1)
 
@@ -248,26 +297,34 @@ object QReadSync {
         // 后端点「禁用」只改列不改 json, 所以只走 json 会让禁用状态全部丢失 ——
         // 合流逻辑见 [QReadMapper.applyServerState]。
         val briefByUrl = linkedMapOf<String, QReadSourceBrief>()
+        val failedPages = mutableListOf<Int>()
         for (page in 1..totalPages) {
             val resp = QReadApi.getBookSourcesNew(url, token, md5, page)
             if (!resp.isSuccess) {
-                AppLog.put("轻阅读书源第 $page 页失败: ${resp.errorMsg}")
+                failedPages += page
                 continue
             }
             resp.data.orEmpty().forEach { brief ->
                 brief.bookSourceUrl.takeIf { it.isNotBlank() }?.let { briefByUrl[it] = brief }
             }
         }
-        if (briefByUrl.isEmpty()) return 0
+        if (briefByUrl.isEmpty()) {
+            return Stage(
+                0,
+                warning = if (failedPages.isEmpty()) "后端书源列表为空"
+                else "书源第 ${failedPages.joinToString("/")} 页拉取失败",
+            )
+        }
 
         // ---- 第 3 步: 分批导出完整 JSON 并落库 ----
         val dao = AppDbProviders.get().bookSourceDao
         var written = 0
         var skipped = 0
+        val failedBatches = mutableListOf<Int>()
         briefByUrl.keys.chunked(SOURCE_EXPORT_BATCH).forEach { batch ->
             val resp = QReadApi.getBookSourceJson(url, token, batch)
             if (!resp.isSuccess) {
-                AppLog.put("轻阅读书源导出失败(${batch.size} 个): ${resp.errorMsg}")
+                failedBatches += batch.size
                 return@forEach
             }
             val jsonArray = resp.data
@@ -279,7 +336,7 @@ object QReadSync {
             val array = runCatching { GSON.parseToJsonElement(jsonArray) }
                 .getOrNull() as? JsonArray
             if (array == null) {
-                AppLog.put("轻阅读书源 JSON 不是数组, 跳过本批(${batch.size} 个)")
+                failedBatches += batch.size
                 return@forEach
             }
             val valid = array.mapNotNull { element ->
@@ -302,10 +359,12 @@ object QReadSync {
             dao.insert(*valid.toTypedArray())
             written += valid.size
         }
-        if (skipped > 0) {
-            AppLog.put("轻阅读书源同步: 有 $skipped 个源解析失败已跳过, 成功写入 $written 个")
-        }
-        return written
+
+        val notes = mutableListOf<String>()
+        if (failedPages.isNotEmpty()) notes += "书源第 ${failedPages.joinToString("/")} 页拉取失败"
+        if (failedBatches.isNotEmpty()) notes += "书源导出失败 ${failedBatches.sum()} 个"
+        if (skipped > 0) notes += "$skipped 个源解析失败已跳过"
+        return Stage(written, warning = notes.takeIf { it.isNotEmpty() }?.joinToString("; "))
     }
 
     /**
@@ -314,21 +373,19 @@ object QReadSync {
      * 后端是两步协议: `getBookshelfPage` 拿 `(总页数, md5)` 并把每页写进服务端缓存,
      * 再按页调 `getBookshelfNew`。跳过第一步会拿到空数组, 这点容易踩坑。
      *
-     * @return (书籍数, 分组数)
+     * @return [Stage.count] = 书籍数, [Stage.extra] = 新建分组数
      */
-    private suspend fun syncBookshelfLocked(): Pair<Int, Int> {
-        val url = QReadSession.serverUrl ?: return 0 to 0
-        val token = QReadSession.accessToken ?: return 0 to 0
+    private suspend fun syncBookshelfLocked(): Stage {
+        val url = QReadSession.serverUrl ?: return Stage(0, warning = "未连接轻阅读后端")
+        val token = QReadSession.accessToken ?: return Stage(0, warning = "未连接轻阅读后端")
 
         val pageResp = QReadApi.getBookshelfPage(url, token)
         if (!pageResp.isSuccess) {
-            AppLog.put("轻阅读书架准备失败: ${pageResp.errorMsg}")
-            return 0 to 0
+            return Stage(0, warning = "书架准备失败: ${pageResp.errorMsg}")
         }
         val md5 = pageResp.data?.md5.orEmpty()
         if (md5.isBlank()) {
-            AppLog.put("轻阅读书架 md5 为空，跳过")
-            return 0 to 0
+            return Stage(0, warning = "书架 md5 为空")
         }
         val totalPages = (pageResp.data?.page ?: 1).coerceAtLeast(1)
 
@@ -336,10 +393,11 @@ object QReadSync {
 
         val bookDao = AppDbProviders.get().bookDao
         var bookCount = 0
+        val failedPages = mutableListOf<Int>()
         for (page in 1..totalPages) {
             val resp = QReadApi.getBookshelf(url, token, md5, page)
             if (!resp.isSuccess) {
-                AppLog.put("轻阅读书架第 $page 页失败: ${resp.errorMsg}")
+                failedPages += page
                 continue
             }
             resp.data.orEmpty().forEach { remote ->
@@ -364,7 +422,11 @@ object QReadSync {
                 bookCount++
             }
         }
-        return bookCount to groupCount
+
+        val notes = mutableListOf<String>()
+        if (failedPages.isNotEmpty()) notes += "书架第 ${failedPages.joinToString("/")} 页拉取失败"
+        if (bookCount == 0 && failedPages.isEmpty()) notes += "后端书架为空"
+        return Stage(bookCount, groupCount, notes.takeIf { it.isNotEmpty() }?.joinToString("; "))
     }
 
     /**
@@ -423,9 +485,9 @@ object QReadSync {
      * 用「并集 + 取较大 usage / 较新时间」而不是「后写覆盖」: 两台设备各搜过的词都要留住,
      * 否则每次同步都会把对方的词删掉。
      */
-    private suspend fun syncSearchHistoryLocked(): Int {
-        val url = QReadSession.serverUrl ?: return 0
-        val token = QReadSession.accessToken ?: return 0
+    private suspend fun syncSearchHistoryLocked(): Stage {
+        val url = QReadSession.serverUrl ?: return Stage(0, warning = "未连接轻阅读后端")
+        val token = QReadSession.accessToken ?: return Stage(0, warning = "未连接轻阅读后端")
 
         val dao = AppDbProviders.get().searchKeywordDao
         val local = dao.all()
@@ -437,7 +499,7 @@ object QReadSync {
             .orEmpty()
 
         val merged = QReadMapper.mergeSearchKeywords(local, remote)
-        if (merged.isEmpty()) return 0
+        if (merged.isEmpty()) return Stage(0)
 
         dao.deleteAll()
         dao.insert(*merged.toTypedArray())
@@ -446,7 +508,7 @@ object QReadSync {
             url, token, KV_SEARCH_HISTORY,
             GSON.toJson(QReadMapper.SearchHistoryPayload(items = merged)),
         )
-        return merged.size
+        return Stage(merged.size)
     }
 
     // ---------------------------------------------------------------------

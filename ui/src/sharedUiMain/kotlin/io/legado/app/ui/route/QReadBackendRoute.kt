@@ -37,7 +37,9 @@ import io.legado.app.ui.compose.theme.AppTheme.DesignTokens
 import io.legado.app.ui.root.AppNavigator
 import io.legado.app.ui.root.RouteEntry
 import io.legado.app.ui.root.ScreenModelStore
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 轻阅读后端 (autobcb/read) 配置与同步页。
@@ -154,21 +156,23 @@ fun QReadBackendRoute(
                     syncing = true
                     status = "正在连接 ${target.name}…"
                     scope.launch {
-                        val login = QReadSession.login(target)
-                        val msg = if (login.isSuccess) {
-                            val r = QReadSync.syncAll()
-                            if (r.isSuccess) {
-                                "同步完成：书源 ${r.sourceCount}、书籍 ${r.bookCount}、" +
-                                    "分组 ${r.groupCount}、搜索记录 ${r.searchCount}"
+                        // 整段 (登录 + 同步 + 回写 UI) 包在 NonCancellable 里:
+                        // scope 来自 rememberCoroutineScope(), 用户一切走页面就被取消。
+                        // 同步是多阶段写库, 取消在中间会留下「书源有了、书架一本没有」的半成品,
+                        // 而且作用域已死连 toast 都弹不出来, 用户完全看不到发生了什么。
+                        withContext(NonCancellable) {
+                            val login = QReadSession.login(target)
+                            val msg = if (login.isSuccess) {
+                                val r = QReadSync.syncAll()
+                                if (r.isSuccess) "同步完成：${r.summary}"
+                                else "同步失败：${r.error}"
                             } else {
-                                "同步失败：${r.error}"
+                                "登录失败：${login.exceptionOrNull()?.message ?: "未知错误"}"
                             }
-                        } else {
-                            "登录失败：${login.exceptionOrNull()?.message ?: "未知错误"}"
+                            status = msg
+                            syncing = false
+                            Toasters.get().toast(msg)
                         }
-                        status = msg
-                        syncing = false
-                        Toasters.get().toast(msg)
                     }
                 },
             )

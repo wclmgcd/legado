@@ -42,7 +42,9 @@ import io.legado.app.ui.root.RouteEntry
 import io.legado.app.ui.root.ScreenModelStore
 import io.legado.app.ui.root.toRouteRef
 import io.legado.app.ui.widget.dialog.HelpDialog
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import legado.ui.generated.resources.Res
 import legado.ui.generated.resources.no
 import legado.ui.generated.resources.ok
@@ -259,19 +261,19 @@ fun RemoteBookRoute(
             onSyncQRead = { server ->
                 showServersDialog = false
                 scope.launch {
-                    val login = QReadSession.login(server)
-                    val msg = if (login.isSuccess) {
-                        val r = QReadSync.syncAll()
-                        if (r.isSuccess) {
-                            "轻阅读同步完成：书源 ${r.sourceCount}、书籍 ${r.bookCount}、" +
-                                "分组 ${r.groupCount}、搜索记录 ${r.searchCount}"
+                    // 包 NonCancellable: scope 是 rememberCoroutineScope(), 关掉对话框/切页会取消它。
+                    // 同步是多阶段写库, 半途取消会留下「书源有了、书架没有」的半成品, 且 toast 也弹不出来。
+                    withContext(NonCancellable) {
+                        val login = QReadSession.login(server)
+                        val msg = if (login.isSuccess) {
+                            val r = QReadSync.syncAll()
+                            if (r.isSuccess) "轻阅读同步完成：${r.summary}"
+                            else "轻阅读同步失败：${r.error}"
                         } else {
-                            "轻阅读同步失败：${r.error}"
+                            "轻阅读登录失败：${login.exceptionOrNull()?.message ?: "未知错误"}"
                         }
-                    } else {
-                        "轻阅读登录失败：${login.exceptionOrNull()?.message ?: "未知错误"}"
+                        Toasters.get().toast(msg)
                     }
-                    Toasters.get().toast(msg)
                 }
             },
         )
