@@ -78,7 +78,7 @@ object QReadRemoteBook {
             type = if (isSearch) TYPE_SEARCH else TYPE_EXPLORE,
         )
         if (!resp.isSuccess) {
-            throw IllegalStateException(resp.errorMsg ?: "远端搜索失败")
+            throw IllegalStateException(resp.errorMsg.ifBlank { "远端搜索失败" })
         }
         val arr = resp.data as? JsonArray ?: return BookListPage(ArrayList(), false)
         val books = ArrayList<SearchBook>(arr.size)
@@ -112,7 +112,7 @@ object QReadRemoteBook {
             bookUrl = book.bookUrl,
         )
         if (!resp.isSuccess) {
-            throw IllegalStateException(resp.errorMsg ?: "远端取目录失败")
+            throw IllegalStateException(resp.errorMsg.ifBlank { "远端取目录失败" })
         }
         val arr = resp.data as? JsonArray ?: return emptyList()
         val chapters = ArrayList<BookChapter>(arr.size)
@@ -142,7 +142,7 @@ object QReadRemoteBook {
             index = bookChapter.index,
         )
         if (!resp.isSuccess) {
-            throw IllegalStateException(resp.errorMsg ?: "远端取正文失败")
+            throw IllegalStateException(resp.errorMsg.ifBlank { "远端取正文失败" })
         }
         return (resp.data as? JsonPrimitive)?.contentOrNull.orEmpty()
     }
